@@ -206,7 +206,10 @@ console.log("\nbundle budgets");
 // explicit budget rather than failing on a rounded 467.0 KiB display value.
 // The latest main-v2 session-runtime fence and exact prompt protocol measure
 // 468.2 KiB here; retain a 0.1 KiB ceiling for platform zlib rounding.
-const initialJSBudgetKiB = 468.3;
+// The model-settings progress-budget controls add a bounded settings-owner
+// block (toggle, round input, validation copy) to the always-mounted settings
+// path; the upstream merge measured 0.4 KiB gzip for the same block.
+const initialJSBudgetKiB = 468.7;
 assertBudget("initial JavaScript gzip", initialJSGzip, initialJSBudgetKiB * 1024);
 assertBudget("largest initial JavaScript chunk gzip", largestInitialJS, 280 * 1024);
 // Render-blocking CSS is intentionally absent: styles.css loads deferred via
@@ -274,19 +277,11 @@ for (const path of localeChunks) {
   // reclaim), while Sticky Context adds file-state and limit diagnostics. The
   // merged stable chunks measure 60.395 KiB zh and 61.232 KiB zh-TW; retain
   // only the next one-decimal ceiling for each dialect.
-  // The outcome card adds one short localized status label per dialect. CI's
-  // Windows zlib measured zh at 60.4 KiB exactly; capability-status copy adds
-  // a small 0.1 KiB ratchet, so retain the next decimal ceiling rather than
-  // dropping the unknown-state explanation.
-  // Image input mode, provenance and unknown-state guidance measure 60.724 KiB
-  // zh and 61.570 KiB zh-TW. Keep the next decimal ceiling per locale.
-  // Protocol recovery and source-availability copy measure 60.927 KiB zh
-  // and 61.789 KiB zh-TW (base: 60.8 / 61.6 rounded).
-  // Rich-link action copy on the current base brings these to
-  // 61.027/61.881 KiB; retain bounded cross-platform headroom.
   // Recovery retry copy reaches the rounded 61.1 KiB boundary on Node/zlib
   // toolchains; keep the next one-decimal ceiling for cross-platform CI.
-  const budget = name.startsWith("zh-TW-") ? 62.0 * 1024 : 61.2 * 1024;
+  // The progress-budget settings add nine labels/hints per dialect (~0.4 KiB
+  // gzip measured on the upstream base); retain the same headroom here.
+  const budget = name.startsWith("zh-TW-") ? 62.4 * 1024 : 61.6 * 1024;
   assertBudget(`${name} gzip`, gzipBytes(path), budget);
 }
 
@@ -393,6 +388,9 @@ const rawInitialBytes = [...initialJS, ...initialCSS, ...appShellCSS]
 // 2496.6 KiB; retain the smallest bounded ceiling.
 // The complete block renderer and input ownership gates measure 2371.7 KiB
 // on the settings + pure-kernel baseline. Keep the smallest bounded ceiling.
-const rawInitialBudgetKiB = 2_371.8;
+// The progress-budget settings controls add their markup/state to the same
+// initial payload (~1.9 KiB raw measured on the upstream base); retain the
+// same headroom on the settings + pure-kernel baseline.
+const rawInitialBudgetKiB = 2_373.7;
 assertBudget("initial raw JavaScript and CSS", rawInitialBytes, rawInitialBudgetKiB * 1024);
 assertBudget("largest initial JavaScript chunk raw", largestInitialJSRaw, 1_000 * 1024);
