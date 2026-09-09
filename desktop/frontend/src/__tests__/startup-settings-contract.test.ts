@@ -62,7 +62,7 @@ ok(
   "startup failure preserves legacy reasoning-display migration precedence",
 );
 ok(
-  bridgeSource.includes('displayMode: "standard", reasoningDisplayMode: "auto", reasoningDisplayModeExplicit: false'),
+  bridgeSource.includes('displayMode: "standard", sessionExperience: "standard", reasoningDisplayMode: "auto", reasoningDisplayModeExplicit: false'),
   "browser startup defaults match the classic standard/live-follow experience",
 );
 ok(
@@ -151,30 +151,15 @@ ok(
   "GLM reasoning protocol is localized in every supported locale",
 );
 ok(
-  settingsSource.includes('settings.general.sectionConversation') &&
-    settingsSource.includes('settings.displayMode') &&
-    settingsSource.includes('["standard", "compact"]') &&
-    settingsSource.includes('settings.reasoningDisplay') &&
-    settingsSource.includes('["hidden", "summary", "auto", "expanded"]') &&
-    settingsSource.includes('settings.processFold') &&
-    settingsSource.includes('["auto", "expanded"]') &&
-    settingsSource.includes('setProcessFoldPreference(pref)') &&
-    settingsSource.includes('app.SetReasoningDisplayMode(mode)'),
-  "General settings presents transcript density, reasoning display, and completed-work folding in one conversation section",
+  settingsSource.includes("<SessionExperienceSettings") &&
+    settingsSource.includes("snapshot={s} busy={busy} apply={apply}"),
+  "General settings delegates the canonical session preference to its owning control",
 );
 ok(
   [enLocaleSource, zhLocaleSource, zhTWLocaleSource].every((source) =>
-    source.includes('"settings.sessionContentDisplay"') &&
-    source.includes('"settings.sessionContentDisplayHint"') &&
-    source.includes('"settings.displayMode"') &&
-    source.includes('"settings.reasoningDisplay"') &&
-    source.includes('"settings.reasoningDisplay.hidden"') &&
-    source.includes('"settings.reasoningDisplay.summary"') &&
-    source.includes('"settings.reasoningDisplay.auto"') &&
-    source.includes('"settings.reasoningDisplay.expanded"') &&
-    source.includes('"settings.processFold"'),
-  ),
-  "conversation-content display group labels are localized in every supported locale",
+    ["settings.sessionExperience", "settings.sessionExperienceHint", "settings.sessionExperience.standard", "settings.sessionExperience.deep"]
+      .every((key) => source.includes(`"${key}"`))),
+  "session experience labels are localized in every supported locale",
 );
 ok(
   stylesSource.includes(".settings-page--general .settings-section") &&
@@ -233,9 +218,9 @@ ok(
 );
 ok(
   bridgeSource.includes('value === "deepseek-upgrade"') &&
-    bridgeSource.includes('recommendedUpgradeAvailable: deepSeekUpgradeMock') &&
+    bridgeSource.includes('recommendedUpgradeAvailable: false') &&
     bridgeSource.includes('headers: deepSeekUpgradeMock ? { "X-Route": "official-custom" } : undefined'),
-  "browser mock can preview the customized legacy DeepSeek upgrade flow",
+  "browser mock preserves custom DeepSeek headers without proposing the retired protocol upgrade",
 );
 ok(
   /async ConnectKey\(apiKey: string\)[\s\S]*?await this\.AddOfficialProviderAccess\("deepseek", apiKey\)/.test(bridgeSource),

@@ -186,7 +186,7 @@ func TestDesktopWireEventTypeCoversSharedPayloadFields(t *testing.T) {
 		`"completed" | "partial" | "blocked"`,
 		`"final_readiness" | "recovery_paused"`,
 		"checkpointTurn?: number;",
-		"retryAttempt?: number;",
+		"retryAttempt?: number;", "WireEvent extends RecoveryEventFields", "recovery?: RecoveryStatus;",
 		"retryMax?: number;",
 		"retryScope?:",
 		"streamAttempt?: WireStreamAttempt;",
@@ -248,6 +248,22 @@ func TestToWireToolCarriesResolvedCapabilityMetadata(t *testing.T) {
 	} {
 		if !strings.Contains(string(b), want) {
 			t.Fatalf("tool JSON = %s, want %s", b, want)
+		}
+	}
+}
+
+func TestToWireToolCarriesSubagentOutcomeMetadata(t *testing.T) {
+	w := ToWire(event.Event{Kind: event.ToolResult, Tool: event.Tool{
+		ID: "skill-1", Name: "run_skill", SubagentRef: "sa_child",
+		SubagentStatus: "partial", SubagentErrorCode: "completion_uncertain", SubagentRetryable: true,
+	}})
+	b, err := json.Marshal(w)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	for _, want := range []string{`"subagentRef":"sa_child"`, `"subagentStatus":"partial"`, `"subagentErrorCode":"completion_uncertain"`, `"subagentRetryable":true`} {
+		if !strings.Contains(string(b), want) {
+			t.Fatalf("subagent outcome JSON = %s, want %s", b, want)
 		}
 	}
 }
@@ -350,7 +366,7 @@ func readDesktopTypes(t *testing.T) string {
 	}
 	dir := filepath.Join(filepath.Dir(file), "..", "..", "desktop", "frontend", "src", "lib")
 	var source strings.Builder
-	for _, name := range []string{"types.ts", "sessionContextTypes.ts"} {
+	for _, name := range []string{"types.ts", "sessionContextTypes.ts", "recoveryStatus.ts"} {
 		b, err := os.ReadFile(filepath.Join(dir, name))
 		if err != nil {
 			t.Fatalf("read desktop type %s: %v", name, err)
@@ -436,8 +452,8 @@ func TestToWireInteractionAndLifecyclePayloads(t *testing.T) {
 	}{
 		{
 			name: "approval",
-			in:   event.Event{Kind: event.ApprovalRequest, Approval: event.Approval{ID: "a1", Tool: "bash", Subject: "rm"}},
-			want: []string{`"kind":"approval_request"`, `"approval":{"id":"a1","tool":"bash","subject":"rm"}`},
+			in:   event.Event{Kind: event.ApprovalRequest, TurnID: "turn-a", ItemID: "a1", Approval: event.Approval{ID: "a1", Tool: "bash", Subject: "rm", TurnID: "turn-a"}},
+			want: []string{`"kind":"approval_request"`, `"promptId":"a1"`, `"promptKind":"approval"`, `"turnId":"turn-a"`, `"approval":{"id":"a1"`, `"tool":"bash"`, `"subject":"rm"`},
 		},
 		{
 			name: "fresh approval",
@@ -473,14 +489,15 @@ func TestToWireInteractionAndLifecyclePayloads(t *testing.T) {
 		},
 		{
 			name: "ask",
-			in: event.Event{Kind: event.AskRequest, Ask: event.Ask{
-				ID: "ask-1",
+			in: event.Event{Kind: event.AskRequest, TurnID: "turn-q", ItemID: "ask-1", Ask: event.Ask{
+				ID:     "ask-1",
+				TurnID: "turn-q",
 				Questions: []event.AskQuestion{{
 					ID: "q1", Header: "Pick", Prompt: "Choose", Multi: true,
 					Options: []event.AskOption{{Label: "A", Description: "Alpha"}, {Label: "B"}},
 				}},
 			}},
-			want: []string{`"kind":"ask_request"`, `"ask":{"id":"ask-1"`, `"header":"Pick"`, `"description":"Alpha"`, `"multi":true`},
+			want: []string{`"kind":"ask_request"`, `"promptId":"ask-1"`, `"promptKind":"ask"`, `"turnId":"turn-q"`, `"ask":{"id":"ask-1"`, `"header":"Pick"`, `"description":"Alpha"`, `"multi":true`},
 		},
 		{
 			name: "compaction",
@@ -513,5 +530,12 @@ func TestToWireInteractionAndLifecyclePayloads(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+func TestPromptWireMarksLegacyIdentity(t *testing.T) {
+	w := ToWire(event.Event{Kind: event.AskRequest, ItemID: "legacy-ask", Ask: event.Ask{ID: "legacy-ask"}})
+	if !w.PromptLegacy || w.PromptID != "legacy-ask" || w.PromptKind != "ask" {
+		t.Fatalf("legacy prompt wire identity = %+v", w)
 	}
 }

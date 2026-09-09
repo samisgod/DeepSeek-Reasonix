@@ -1,3 +1,4 @@
+import { searchOutputMetadata } from "../lib/searchSources";
 import { memo, useCallback, useEffect, useRef, useState, type ReactNode } from "react";
 import { Suspense, lazy } from "react";
 import { ChevronRight, Compass } from "lucide-react";
@@ -42,7 +43,7 @@ import type { Translator } from "../lib/i18n";
 import { ReadOnlyBatch } from "./ReadOnlyBatch";
 import { Markdown } from "./Markdown";
 import { ReasoningSummary } from "./ReasoningSummary";
-import { useReasoningDisplayMode } from "../lib/reasoningDisplayPreference";
+import { useWorkProcessPresentation } from "../lib/sessionExperience";
 import { useTranscriptUserResizeIntent } from "./TranscriptLayoutIntentContext";
 import { resolveToolCardDefaultOpen } from "../lib/transcriptRowGeometry";
 import type { SearchSourcePresentation } from "../lib/searchSourcesPresentation";
@@ -60,8 +61,19 @@ function subagentPhaseLabel(t: Translator, phase: SubagentPhase): string {
     case "tool": return t("subagent.phase.tool");
     case "retrying": return t("subagent.phase.retrying");
     case "completed": return t("subagent.phase.completed");
+    case "partial": return t("subagent.phase.partial");
     case "failed": return t("subagent.phase.failed");
     case "cancelled": return t("subagent.phase.cancelled");
+  }
+}
+
+function subagentOutcomeLabel(t: Translator, status: string): string {
+  switch (status) {
+    case "completed": return t("subagent.outcome.completed");
+    case "partial": return t("subagent.outcome.partial");
+    case "failed": return t("subagent.outcome.failed");
+    case "cancelled": return t("subagent.outcome.cancelled");
+    default: return status;
   }
 }
 
@@ -240,8 +252,8 @@ export const ToolCard = memo(function ToolCard({ item, subcalls, tabId, displayN
         return `${label} · ${t("subagent.phase.elapsed", { n: formatElapsedSeconds(nowTick - sp.startedAt) })} · ${t("subagent.activity.ago", { n: formatElapsedSeconds(nowTick - sp.lastActivityAt) })}`;
       })()
     : "";
-  const reasoningDisplayMode = useReasoningDisplayMode();
-  const hasSubagentPreview = Boolean(sp && ((sp.reasoning && reasoningDisplayMode !== "hidden" && reasoningDisplayMode !== "pending") || sp.text || sp.notice));
+  const presentation = useWorkProcessPresentation();
+  const hasSubagentPreview = Boolean(sp && ((sp.reasoning && presentation.showWhileRunning) || sp.text || sp.notice));
 
   // All tools default to collapsed. Sub-agent tools open while running so the
   // user sees nested calls; they collapse when done. Reasoning (AssistantMessage)
@@ -249,8 +261,8 @@ export const ToolCard = memo(function ToolCard({ item, subcalls, tabId, displayN
   // reasoning and response/tool phases.
   const subagentReasoningRunning = sp?.phase === "reasoning";
   const subagentActive = Boolean(sp) && item.status === "running";
-  const liveFollow = reasoningDisplayMode === "auto" || reasoningDisplayMode === "expanded";
-  const defaultOpen = resolveToolCardDefaultOpen(item, nested.length, reasoningDisplayMode);
+  const liveFollow = presentation.showWhileRunning;
+  const defaultOpen = resolveToolCardDefaultOpen(item, nested.length, presentation);
   const [userOpen, setUserOpen] = useState<boolean | null>(null);
   const open = userOpen ?? defaultOpen;
   const openRef = useRef(open);
@@ -260,22 +272,22 @@ export const ToolCard = memo(function ToolCard({ item, subcalls, tabId, displayN
   // The sub-agent reasoning preview opens as a one-line summary; the full
   // Markdown only mounts after the user expands the reasoning section.
   const [subagentReasoningOpen, setSubagentReasoningOpen] = useState(
-    () => reasoningDisplayMode === "expanded" || (reasoningDisplayMode === "auto" && subagentActive),
+    () => presentation.keepExpandedAfterCompletion || (presentation.showWhileRunning && subagentActive),
   );
   const subagentReasoningUserOverridden = useRef(false);
   const previousSubagentReasoningRunning = useRef(subagentReasoningRunning);
   const previousSubagentActive = useRef(subagentActive);
-  const previousReasoningDisplayMode = useRef(reasoningDisplayMode);
+  const previousExperience = useRef(presentation.experience);
   useEffect(() => {
-    const modeChanged = previousReasoningDisplayMode.current !== reasoningDisplayMode;
+    const modeChanged = previousExperience.current !== presentation.experience;
     const wasRunning = previousSubagentReasoningRunning.current;
     const wasActive = previousSubagentActive.current;
-    previousReasoningDisplayMode.current = reasoningDisplayMode;
+    previousExperience.current = presentation.experience;
     previousSubagentReasoningRunning.current = subagentReasoningRunning;
     previousSubagentActive.current = subagentActive;
     if (modeChanged) {
       subagentReasoningUserOverridden.current = false;
-      setSubagentReasoningOpen(reasoningDisplayMode === "expanded" || (reasoningDisplayMode === "auto" && subagentActive));
+      setSubagentReasoningOpen(presentation.keepExpandedAfterCompletion || (presentation.showWhileRunning && subagentActive));
       return;
     }
     if ((subagentActive && !wasActive) || (subagentReasoningRunning && !wasRunning)) {
@@ -283,11 +295,11 @@ export const ToolCard = memo(function ToolCard({ item, subcalls, tabId, displayN
       if (liveFollow) setSubagentReasoningOpen(true);
       return;
     }
-    if (reasoningDisplayMode !== "auto") return;
-    if (!subagentActive && wasActive && !subagentReasoningUserOverridden.current) {
+    if (!presentation.showWhileRunning) return;
+    if (!subagentActive && wasActive && !presentation.keepExpandedAfterCompletion && !subagentReasoningUserOverridden.current) {
       setSubagentReasoningOpen(false);
     }
-  }, [liveFollow, reasoningDisplayMode, subagentActive, subagentReasoningRunning]);
+  }, [liveFollow, presentation, subagentActive, subagentReasoningRunning]);
   // Lazy-load full tool data from the backend when the card is expanded and
   // the in-memory copy was archived for memory efficiency.
   const [fullData, setFullData] = useState<{ args: string; output?: string; execution?: ToolItem["execution"]; mcpApp?: MCPAppPresentation } | null>(null);
@@ -311,7 +323,10 @@ export const ToolCard = memo(function ToolCard({ item, subcalls, tabId, displayN
   }, [isWebSearch, item.searchSources]);
   const searchVisibleCount = searchPresentation?.visible.length ?? item.searchSources?.length ?? 0;
   const searchHiddenCount = searchPresentation?.hiddenCount ?? 0;
-  const searchResultLabel = isWebSearch && searchVisibleCount === 0 && searchHiddenCount > 0
+  const searchMetadata = searchOutputMetadata(effectiveOutput);
+  const searchSummary = searchMetadata.summary ?? item.searchSummary;
+  const searchSourcesMissing = (item.searchSourcesStatus ?? searchMetadata.status) === "not_provided";
+  const searchResultLabel = searchSourcesMissing ? t("sources.notProvided") : isWebSearch && searchVisibleCount === 0 && searchHiddenCount > 0
     ? t("sources.noValid")
     : t("tool.searchResults", { n: searchVisibleCount });
   const isShellCard = Boolean(item.isShell || item.name === "bash" || execution);
@@ -334,14 +349,15 @@ export const ToolCard = memo(function ToolCard({ item, subcalls, tabId, displayN
   // user sees progress; closed by default once settled.
   const hasArchivedOnDemandBody = Boolean(item.dataArchived && tabId);
   const hasArgsOrOutput = !previewDiff && diffs.length === 0 && (isWebSearch
-    ? Boolean(effectiveArgs || searchVisibleCount || searchHiddenCount)
+    ? Boolean(effectiveArgs || searchVisibleCount || searchHiddenCount || searchSourcesMissing || searchSummary || hasArchivedOnDemandBody)
     : Boolean(effectiveArgs || displayOutput || hasArchivedOnDemandBody));
 
   // Shell output: split into preview + "show all" toggle.
   const shellOutput = isShellCard && displayOutput ? displayOutput : null;
   const shellPreview = shellOutput ? splitPreview(shellOutput, SHELL_PREVIEW_LINES) : null;
   const hasStderrDetails = Boolean(execution?.outputTail && execution.outputTail.trim());
-  const hasBody = Boolean(previewDiff || diffs.length || hasNested || shellPreview || (!shellPreview && hasArgsOrOutput) || item.error || hasSubagentPreview || hasStderrDetails || riskLabel || verificationLabel);
+  const hasSubagentOutcome = Boolean(item.subagentStatus || item.subagentRef);
+  const hasBody = Boolean(previewDiff || diffs.length || hasNested || shellPreview || (!shellPreview && hasArgsOrOutput) || item.error || hasSubagentPreview || hasSubagentOutcome || hasStderrDetails || riskLabel || verificationLabel);
   const errorText = item.error ? normalizeErrorText(item.error) : "";
   const errorSummary = errorText ? summarizeToolError(errorText, t("tool.errorReceiptMismatch")) : "";
   const hasErrorDetails = errorText ? errorNeedsDetails(errorText, errorSummary) : false;
@@ -458,7 +474,7 @@ export const ToolCard = memo(function ToolCard({ item, subcalls, tabId, displayN
 
         {open && hasSubagentPreview && sp && (
           <div className="tool__subagent-preview">
-            {sp.reasoning && reasoningDisplayMode !== "hidden" && reasoningDisplayMode !== "pending" && (
+            {sp.reasoning && presentation.showWhileRunning && (
               <div className="tool__subagent-preview-section">
                 <button
                   type="button"
@@ -505,6 +521,16 @@ export const ToolCard = memo(function ToolCard({ item, subcalls, tabId, displayN
               </div>
             )}
             {sp.truncated && <div className="tool__note">{t("subagent.preview.truncated")}</div>}
+          </div>
+        )}
+
+        {open && hasSubagentOutcome && (
+          <div className="tool__subagent-outcome">
+            <div className="tool__subagent-outcome-status">
+              {t("subagent.outcome.label")} {subagentOutcomeLabel(t, item.subagentStatus ?? "unknown")}{item.subagentRetryable ? ` · ${t("subagent.outcome.retryable")}` : ""}
+            </div>
+            {item.subagentRef && <code>{item.subagentRef}</code>}
+            {item.subagentErrorCode && <div className="tool__note">{item.subagentErrorCode}</div>}
           </div>
         )}
 
@@ -560,6 +586,7 @@ export const ToolCard = memo(function ToolCard({ item, subcalls, tabId, displayN
         {isWebSearch && hasArgsOrOutput && (
           <div className="tool__search-summary">
             {subject && <div className="tool__search-query">{t("tool.searchQuery", { query: subject })}</div>}
+            {searchSummary && <div className="tool__search-summary-text">{searchSummary}</div>}
             <div className="tool__search-count">
               {searchResultLabel}
               {searchHiddenCount > 0 && ` · ${t("sources.hidden", { n: searchHiddenCount })}`}

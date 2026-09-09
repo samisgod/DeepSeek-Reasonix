@@ -1,6 +1,7 @@
 // useController is the frontend's state machine over the agent event stream. It keeps
 // per-tab output, tool state, and approvals while the user switches tabs; components
 // render the active tab's state.
+import { runtimeStatusSnapshotIsStale } from "./runtimeStatusFreshness";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { asArray } from "./array";
 import { compactArchivedToolItems } from "./archivedToolItems";
@@ -12,7 +13,7 @@ import { settleForkConversationForTab } from "./forkWorktree";
 import type { MessageActionScope, MessageActionState } from "./messageActions";
 import { mergeRateBand, type AggregatedRateBand } from "./costRateBand";
 import { requestInboxCancel, type CancelOutcome } from "./inboxCancel";
-import { answerPromptForActiveTurn, normalizeTurnSubmit, resolveActiveTurnId } from "./inboxSubmit";
+import { answerPromptForActiveTurn, normalizeTurnSubmit, resolveActiveTurnId, resolvePromptForTab } from "./inboxSubmit";
 import { findTabAfterSubmitFailure, reduceManagementConfirmation, reduceSubmitFailure } from "./turnSubmissionFailure";
 import { formatContextMaintenanceNotice, isNewMaintenanceOperation, rememberMaintenanceOperation } from "./contextMaintenanceTypes";
 import { formatGuardianAssessmentNotice } from "./guardianEvents";
@@ -53,6 +54,7 @@ import type { SearchSource } from "./searchSources";
 import { attachWebSearchOutput, historySearchAndAnswer } from "./searchTranscript";
 import { fileDiffFromWire, parseTodos, summarize, summarizeFileDiff, type ToolFileDiff } from "./tools";
 import { modeHasAutoApproveTools, normalizeMode, normalizeToolApprovalMode, type QualityFloor } from "./types";
+import { parseSubagentOutcomeText } from "./subagentOutcome";
 import type {
   BalanceInfo,
   CheckpointMeta,
@@ -88,6 +90,7 @@ import type {
   WireUsage,
   WireShellExecution,
 } from "./types";
+
 export { foregroundRunningFromRuntimeMeta } from "./runtimeMeta";
 export {
   deliveryReadinessDetail,
@@ -107,9 +110,7 @@ export const SUBAGENT_PROGRESS_NOTICE = "reasonix.subagent.notice";
 // to ordinary tool output on older frontends.
 const SUBAGENT_PROGRESS_PREFIX = "reasonix.subagent.";
 const TURN_ACTIVITY_KINDS = new Set(["turn_started", "text", "reasoning", "message", "tool_dispatch", "tool_progress", "tool_result_preview", "tool_result"]);
-const SUBAGENT_PROGRESS_PHASES = new Set([
-  "queued", "running", "reasoning", "responding", "tool", "retrying", "completed", "failed", "cancelled",
-]);
+const SUBAGENT_PROGRESS_PHASES = new Set(["queued", "running", "reasoning", "responding", "tool", "retrying", "completed", "partial", "failed", "cancelled"]);
 // Tool names that initialize a sub-agent progress card. parallel_tasks/fleet
 // are group cards: they settle when their whole child progress tree is
 // terminal, since they never receive a terminal status of their own.
@@ -121,9 +122,7 @@ const SUBAGENT_PREVIEW_REASONING_LIMIT = 8 << 10;
 const SUBAGENT_PREVIEW_TEXT_LIMIT = 8 << 10;
 const SUBAGENT_PREVIEW_NOTICE_LIMIT = 2 << 10;
 const RUNTIME_STATUS_ONLY = { hydrateSessionData: false } as const;
-export type SubagentPhase =
-  | "queued" | "running" | "reasoning" | "responding" | "tool" | "retrying"
-  | "completed" | "failed" | "cancelled";
+export type SubagentPhase = "queued" | "running" | "reasoning" | "responding" | "tool" | "retrying" | "completed" | "partial" | "failed" | "cancelled";
 // In-memory-only sub-agent progress preview. Never persisted: history
 // hydration rebuilds tool items from the transcript without these fields, and
 // the full sub-agent transcript stays the source of truth after a restart.
@@ -141,7 +140,7 @@ export function isSubagentProgressName(name: string | undefined): boolean {
   return !!name && name.startsWith(SUBAGENT_PROGRESS_PREFIX);
 }
 export function isTerminalSubagentPhase(phase: string | undefined): boolean {
-  return phase === "completed" || phase === "failed" || phase === "cancelled";
+  return phase === "completed" || phase === "partial" || phase === "failed" || phase === "cancelled";
 }
 function isGroupSubagentTool(name: string): boolean {
   return name === "parallel_tasks" || name === "fleet";
@@ -149,6 +148,7 @@ function isGroupSubagentTool(name: string): boolean {
 function terminalStatusOf(phase: string): ToolStatus {
   switch (phase) {
     case "completed": return "done";
+    case "partial": return "error";
     case "failed": return "error";
     case "cancelled": return "stopped";
   }
@@ -268,7 +268,7 @@ export type Item =
   | { kind: "user"; id: string; submissionId?: string; text: string; submitText?: string; failed?: boolean; createdAt?: number; checkpointTurn?: number; historyTurn?: number }
   | { kind: "assistant"; id: string; text: string; reasoning: string; streaming: boolean; wasStreamed?: true; reasoningComplete?: boolean; reasoningDurationMs?: number; workDurationMs?: number; memoryCitations?: MemoryCitation[]; searchSources?: SearchSource[] }
   | { kind: "phase"; id: string; text: string }
-  | { kind: "notice"; id: string; level: "info" | "warn"; text: string; detail?: string; code?: string; title?: string; variant?: "delivery" | "completion"; action?: "continue_delivery" | "open_changes"; completionSummary?: WireCompletionSummary; decisionReceipt?: WireDecisionReceipt; missing?: string[]; inboxItemId?: string }
+  | { kind: "notice"; id: string; level: "info" | "warn"; text: string; detail?: string; code?: string; title?: string; variant?: "delivery" | "completion"; action?: "continue_delivery" | "open_changes" | "recover_context"; recoveryId?: string; completionSummary?: WireCompletionSummary; decisionReceipt?: WireDecisionReceipt; missing?: string[]; inboxItemId?: string }
   | {
       kind: "compaction";
       id: string;
@@ -285,9 +285,9 @@ export type Item =
       args: string;
       readOnly: boolean;
       resolvedName?: string;
-      capabilityId?: string;
+      capabilityId?: string; subagentRef?: string; subagentStatus?: string; subagentErrorCode?: string; subagentRetryable?: boolean;
       status: ToolStatus;
-      output?: string; searchSources?: SearchSource[]; // display-only provider search results; replay data stays in output/serverSearch
+      output?: string; searchSources?: SearchSource[]; searchSourcesStatus?: "available" | "not_provided"; searchSummary?: string; // display-only provider search results; replay data stays in output/serverSearch
       error?: string;
       truncated?: boolean;
       dataArchived?: boolean; // args/output trimmed for memory; full data available via backend
@@ -360,6 +360,17 @@ export function acceptsExtensionGeneration(stored: number | undefined, incoming:
 // prefixes persisted steers the same way). The prefix is the only durable
 // marker, so display code identifies steers by it.
 export const STEER_NOTICE_PREFIX = "↪ ";
+
+function isStalePromptError(error: unknown): boolean {
+  return /active turn|runtime changed|stale/i.test(errorMessage(error));
+}
+
+function handlePromptFailure(dispatchTo: (tabId: string, action: Action) => void, tabId: string, id: string, epoch: number, error: unknown, kind?: "approval" | "ask" | "mcp") {
+  if (isStalePromptError(error) && kind) dispatchTo(tabId, { type: "expire_prompt", id, epoch, kind });
+  else if (kind) dispatchTo(tabId, { type: "submit_prompt_failed", id, epoch });
+  replayPendingPromptsForActiveTab(tabId);
+}
+
 export function isSteerNoticeText(text: string): boolean {
   return text.startsWith(STEER_NOTICE_PREFIX);
 }
@@ -418,6 +429,8 @@ export interface State {
   turnStartAt: number;
   turnDoneAt: number;
   turnLifecycleObservedAt?: number;
+  /** Last runtime snapshot sequence accepted for this tab/epoch. */
+  runtimeStatusEpoch?: string; runtimeStatusSeq?: number; runtimeStatusSnapshotAt?: number;
   // Completion tokens accumulated across executor usage events within the
   // current turn. ReasoningTokens is a subset of CompletionTokens.
   turnOutputTokens: number;
@@ -481,7 +494,7 @@ export interface State {
   sessionTokens: number;
   sessionCost: number;
   sessionCurrency: string;
-  retry?: { attempt: number; max: number; observedAt: number };
+  retry?: { attempt: number; max: number; observedAt: number; recovery?: WireEvent["recovery"] };
   seq: number;
   sessionGen: number;
   // Per-session counter bumped after hydration ancillary data (context, effort,
@@ -788,7 +801,7 @@ type Action =
   | { type: "turn_submit_rejected"; submissionId: string; error: string }
   | { type: "send_failed"; submissionId: string; error: string }
   | { type: "turn_interrupted" }
-  | { type: "backend_status"; running: boolean; turnStartedAt?: number; pendingPrompt?: boolean; backgroundJobs?: number; cancelRequested?: boolean; cancellable?: boolean; turnId?: string; turnStatus?: string; snapshotAt?: number }
+  | { type: "backend_status"; running: boolean; turnStartedAt?: number; pendingPrompt?: boolean; backgroundJobs?: number; cancelRequested?: boolean; cancellable?: boolean; turnId?: string; turnStatus?: string; snapshotAt?: number; runtimeEpoch?: string; turnEventSeq?: number }
   | { type: "cancel_requested" }
   | { type: "meta"; meta: Meta }
   | { type: "optimistic_meta"; meta: Meta }
@@ -818,6 +831,7 @@ type Action =
   | { type: "local_notice"; level: "info" | "warn"; text: string; preserveRuntime?: boolean }
   | { type: "clearApproval" }
   | { type: "clearAsk" }
+  | { type: "expire_prompt"; id: string; epoch: number; kind: "approval" | "ask" | "mcp" }
   | { type: "clearExtensionForm" }
   | { type: "extension_notifications_drained" }
   | { type: "approval_drained"; ids: string[]; epoch: number }
@@ -839,6 +853,7 @@ function backendStatusFromRuntimeMeta(meta: RuntimeMetaSnapshot): Extract<Action
     cancellable: foregroundRunning,
     turnId: meta.turnId,
     turnStatus: meta.turnStatus,
+    runtimeEpoch: meta.runtime?.epoch, turnEventSeq: meta.turnEventSeq,
   };
 }
 
@@ -869,6 +884,10 @@ export function historyMessagesToItems(messages: HistoryMessage[], idPrefix: str
       continue;
     }
     if (m.role === "notice") {
+      if (m.code === "protocol_recovery" && m.pending && m.protocolRecovery?.id) {
+        items.push({kind:"notice",id:`${idPrefix}${seq++}`,level:"info",code:m.code,text:t("notice.protocolRecoveryBody"),action:"recover_context",recoveryId:m.protocolRecovery.id});
+        continue;
+      }
       if (m.code === "final_readiness" && m.pending) {
         items.push({
           kind: "notice",
@@ -950,7 +969,7 @@ export function historyMessagesToItems(messages: HistoryMessage[], idPrefix: str
           summary: summarizeFileDiff(fileDiff) || tc.summary,
           fileDiff,
           isShell: tc.name === "bash" || (tc.id || "").startsWith("shell-"),
-          execution: result?.execution,
+          execution: result?.execution, ...parseSubagentOutcomeText(output),
         });
         seq++;
       }
@@ -971,7 +990,7 @@ export function historyMessagesToItems(messages: HistoryMessage[], idPrefix: str
         error,
         dataArchived: m.toolResultArchived || undefined,
         isShell: (m.toolName || "") === "bash" || (m.toolCallId || "").startsWith("shell-"),
-        execution: m.execution,
+        execution: m.execution, ...parseSubagentOutcomeText(output),
       });
       seq++;
       continue;
@@ -1454,11 +1473,11 @@ function applyEvent(s: State, e: WireEvent, preserveToolPayloads = false): State
     return applyExtensionSurfaceEvent(s, e.extension);
   }
   if (e.kind === "retrying") {
-    // Retrying is synchronous proof that the foreground turn is active. Keep
-    // older idle ListTabs completions from hiding Stop/Escape during backoff.
+    // Recovery keeps Stop/Escape available despite stale idle snapshots.
     return {
       ...s,
       retry: {
+        recovery: e.recovery,
         attempt: e.retryAttempt ?? 0,
         max: e.retryMax ?? 0,
         observedAt: promptEventClock(),
@@ -1664,7 +1683,7 @@ function applyEvent(s: State, e: WireEvent, preserveToolPayloads = false): State
           const args = t.args ? t.args : it.args;
           const fileDiff = fileDiffFromWire(t);
           const summary = summarizeFileDiff(fileDiff) || summarize(t.name, args) || (t.name === it.name && args === it.args ? it.summary : undefined);
-          next[idx] = { ...it, name: t.name, args, readOnly: t.readOnly, resolvedName: t.resolvedName ?? it.resolvedName, capabilityId: t.capabilityId ?? it.capabilityId, profile: t.profile ?? it.profile, summary, fileDiff, argChars: undefined, isShell: it.isShell || t.name === "bash" || id.startsWith("shell-"), execution: t.execution ?? it.execution, subagentProgress: it.subagentProgress ?? (SUBAGENT_PROGRESS_TOOLS.has(t.name) ? freshSubagentProgress() : undefined) };
+            next[idx] = { ...it, name: t.name, args, readOnly: t.readOnly, resolvedName: t.resolvedName ?? it.resolvedName, capabilityId: t.capabilityId ?? it.capabilityId, profile: t.profile ?? it.profile, subagentRef: t.subagentRef ?? it.subagentRef, subagentStatus: t.subagentStatus ?? it.subagentStatus, subagentErrorCode: t.subagentErrorCode ?? it.subagentErrorCode, subagentRetryable: t.subagentRetryable ?? it.subagentRetryable, summary, fileDiff, argChars: undefined, isShell: it.isShell || t.name === "bash" || id.startsWith("shell-"), execution: t.execution ?? it.execution, subagentProgress: it.subagentProgress ?? (SUBAGENT_PROGRESS_TOOLS.has(t.name) ? freshSubagentProgress() : undefined) };
         }
         if (t.parentId) touchSubagentParent(next, t.parentId);
         return { ...settled, items: next };
@@ -1732,7 +1751,7 @@ function applyEvent(s: State, e: WireEvent, preserveToolPayloads = false): State
             durationMs: t.durationMs,
             summary,
             isShell: existing.isShell || existing.name === "bash" || t.name === "bash",
-            execution: t.execution ?? existing.execution,
+            execution: t.execution ?? existing.execution, subagentRef: t.subagentRef ?? existing.subagentRef, subagentStatus: t.subagentStatus ?? existing.subagentStatus, subagentErrorCode: t.subagentErrorCode ?? existing.subagentErrorCode, subagentRetryable: t.subagentRetryable ?? existing.subagentRetryable,
           };
         }
       }
@@ -1836,7 +1855,7 @@ function applyEvent(s: State, e: WireEvent, preserveToolPayloads = false): State
       return beginPromptWait({
         ...s,
         activeTurnId: e.turnId ?? s.activeTurnId,
-        approval: e.approval,
+        approval: e.approval ? { ...e.approval, turnId: e.turnId ?? e.approval.turnId, runtimeEpoch: e.runtimeEpoch ?? e.approval.runtimeEpoch } : e.approval,
         // A replay of the SAME prompt (post-answer delayed delivery, or the
         // #6429 re-arm after activation) keeps the original arrival time; only
         // a genuinely new prompt id re-anchors it (#6432 reverse race).
@@ -1854,7 +1873,7 @@ function applyEvent(s: State, e: WireEvent, preserveToolPayloads = false): State
       return beginPromptWait({
         ...s,
         activeTurnId: e.turnId ?? s.activeTurnId,
-        ask: e.ask,
+        ask: e.ask ? { ...e.ask, turnId: e.turnId ?? e.ask.turnId, runtimeEpoch: e.runtimeEpoch ?? e.ask.runtimeEpoch } : e.ask,
         promptArrivedAt: e.ask?.id === s.promptArrivedId ? s.promptArrivedAt : promptEventClock(),
         promptArrivedId: e.ask?.id,
         pendingPrompt: true,
@@ -1869,7 +1888,7 @@ function applyEvent(s: State, e: WireEvent, preserveToolPayloads = false): State
       return beginPromptWait({
         ...s,
         activeTurnId: e.turnId ?? s.activeTurnId,
-        mcpInteraction: e.mcpInteraction,
+        mcpInteraction: e.mcpInteraction ? { ...e.mcpInteraction, turnId: e.turnId ?? e.mcpInteraction.turnId, runtimeEpoch: e.runtimeEpoch ?? e.mcpInteraction.runtimeEpoch } : e.mcpInteraction,
         promptArrivedAt: e.mcpInteraction?.id === s.promptArrivedId ? s.promptArrivedAt : promptEventClock(),
         promptArrivedId: e.mcpInteraction?.id,
         pendingPrompt: true,
@@ -1969,6 +1988,10 @@ function applyEvent(s: State, e: WireEvent, preserveToolPayloads = false): State
       } else if (e.err && !s.streamInterruptNoticeShown) {
         items = [...finalized, { kind: "notice", id: `e${s.seq}`, level: "warn", text: e.err }];
       }
+      if (e.protocolRecovery?.id && e.status !== "interrupted" && !s.cancelRequested) {
+        items = items.map(item => item.kind==="notice" && item.action==="recover_context" ? {...item,action:undefined} : item);
+        items.push({kind:"notice",id:`e${s.seq}-protocol`,level:"info",code:"protocol_recovery",text:t("notice.protocolRecoveryBody"),action:"recover_context",recoveryId:e.protocolRecovery.id});
+      }
       // Plan approval can arrive before turn_done on some Wails event paths.
       // Keep that gate visible instead of clearing the only UI that can answer it.
       const keepPlanApproval = s.approval?.tool === "exit_plan_mode";
@@ -2011,7 +2034,7 @@ export function reducer(s: State, a: Action): State {
       return {
         ...s,
         seq: seq + 1,
-        items: [...s.items, { kind: "user", id: userItemId, submissionId: a.submissionId, text: a.text, submitText: a.submitText, createdAt: Date.now() }],
+        items: [...s.items.map(item => item.kind==="notice" && item.action==="recover_context" ? {...item,action:undefined} : item), { kind: "user", id: userItemId, submissionId: a.submissionId, text: a.text, submitText: a.submitText, createdAt: Date.now() }],
         running: true,
         pendingPrompt: false,
         cancelRequested: false,
@@ -2024,7 +2047,7 @@ export function reducer(s: State, a: Action): State {
         promptArrivedId: undefined,
         pendingUser: a.text,
         pendingSubmissionId: a.submissionId,
-        activeTurnId: undefined,
+        activeTurnId: s.turnActive ? s.activeTurnId : undefined,
         currentAssistant: undefined,
         assistantSegmentOrdinal: 0,
         live: undefined,
@@ -2079,8 +2102,12 @@ export function reducer(s: State, a: Action): State {
       return withRemoteTurnInterrupted(s);
     }
     case "backend_status": {
+      const incomingEpoch = a.runtimeEpoch?.trim();
+      const storedEpoch = s.runtimeStatusEpoch?.trim();
+      if (runtimeStatusSnapshotIsStale(s, a)) return s;
       // Reject snapshots that began before newer prompt or turn lifecycle evidence.
       if (runtimeSnapshotPredatesPrompt(s, a.snapshotAt) || snapshotPredatesTurnLifecycle(s.turnLifecycleObservedAt, a.snapshotAt)) return s;
+      const runtimeStatus = { runtimeStatusEpoch: incomingEpoch ?? storedEpoch, runtimeStatusSeq: a.turnEventSeq ?? s.runtimeStatusSeq, runtimeStatusSnapshotAt: a.snapshotAt };
       const pendingPrompt = Boolean(a.pendingPrompt);
       const backgroundJobs = Math.max(0, a.backgroundJobs ?? s.backgroundJobs ?? 0);
       const cancelRequested = Boolean(a.cancelRequested);
@@ -2102,10 +2129,12 @@ export function reducer(s: State, a: Action): State {
         turnStartedAt === s.turnStartAt &&
         activeTurnId === s.activeTurnId &&
         !clearsRetry
-      ) return s;
+      ) return incomingEpoch || a.turnEventSeq !== undefined
+        ? { ...s, ...runtimeStatus } : s;
       if (foregroundRunning) {
         return {
           ...s,
+          ...runtimeStatus,
           running: true,
           turnActive: true,
           pendingPrompt,
@@ -2125,6 +2154,7 @@ export function reducer(s: State, a: Action): State {
       }));
       return endPromptWait({
         ...telemetry,
+        ...runtimeStatus,
         items: finalized,
         running: false,
         turnActive: false,
@@ -2323,6 +2353,19 @@ export function reducer(s: State, a: Action): State {
         resolvedPromptId: s.ask?.id ?? s.mcpInteraction?.id ?? s.resolvedPromptId,
       };
       return endPromptWaitIfIdle(next);
+    }
+    case "expire_prompt": {
+      if (s.promptEpoch !== a.epoch) return s;
+      if (a.kind === "approval") {
+        if (s.approval?.id !== a.id) return s;
+        return endPromptWaitIfIdle({ ...s, approval: undefined, pendingPrompt: Boolean(s.ask || s.mcpInteraction), resolvedPromptId: a.id });
+      }
+      if (a.kind === "ask") {
+        if (s.ask?.id !== a.id) return s;
+        return endPromptWaitIfIdle({ ...s, ask: undefined, pendingPrompt: Boolean(s.approval || s.mcpInteraction), resolvedPromptId: a.id });
+      }
+      if (s.mcpInteraction?.id !== a.id) return s;
+      return endPromptWaitIfIdle({ ...s, mcpInteraction: undefined, pendingPrompt: Boolean(s.approval || s.ask), resolvedPromptId: a.id });
     }
     case "clearExtensionForm": return s.extensionForm ? { ...s, extensionForm: undefined } : s;
     case "extension_notifications_drained": return s.extensionNotifications.length > 0 ? { ...s, extensionNotifications: [] } : s;
@@ -3161,9 +3204,9 @@ export function useController() {
     return tabs.find((tab) => tab.active) ?? tabs[0];
   }, []);
 
-  // snapshotAt is the promptEventClock() reading taken immediately before
-  // initiating the backend call that produced `tab`. The reducer uses it to
-  // ignore snapshots that predate a live approval/ask event (#6429).
+  // snapshotAt is the promptEventClock() reading taken after the backend call
+  // produced `tab`. The reducer uses it to ignore snapshots that predate a
+  // live approval/ask event (#6429).
   const dispatchRuntimeStatusForTab = useCallback((tabId: string, tab: RuntimeMetaSnapshot, snapshotAt?: number) => {
     const foregroundRunning = foregroundRunningFromRuntimeMeta(tab);
     const runtimeEpoch = tab.runtime?.epoch;
@@ -3183,6 +3226,8 @@ export function useController() {
       cancellable: foregroundRunning,
       turnId: tab.turnId,
       turnStatus: tab.turnStatus,
+      runtimeEpoch,
+      turnEventSeq: tab.turnEventSeq,
       snapshotAt,
     });
     // backend_status reconciliation can clear a live prompt from frontend state.
@@ -3484,6 +3529,8 @@ export function useController() {
         if (!acceptsRuntimeEventEpoch(acceptedEpoch, e.runtimeEpoch)) return;
         if (!acceptedEpoch) runtimeEpochByTabRef.current.set(targetTabId, e.runtimeEpoch);
       }
+      const currentMeta = statesRef.current.get(targetTabId)?.meta;
+      if (e.sessionGeneration !== undefined && (!currentMeta || currentMeta.sessionGeneration === undefined || e.sessionGeneration !== currentMeta.sessionGeneration)) return;
       if (!turnEventProjector.acceptLive(targetTabId, e, acceptedEpoch)) return;
       uiPerfTracker.onWireEvent(targetTabId, e.kind);
       if (TURN_ACTIVITY_KINDS.has(e.kind)) lastTurnActivityAtByTab.current.set(targetTabId, Date.now());
@@ -3902,44 +3949,32 @@ export function useController() {
   const approve = useCallback((id: string, allow: boolean, session: boolean, persist: boolean) => {
     if (!activeTabId) return;
     const tabId = activeTabId;
+    const promptState = statesRef.current.get(tabId);
     // Pin the failure callback to the prompt-id epoch the RPC was issued in:
     // if a controller rebuild lands while the call is in flight, a late
     // failure must not undo bookkeeping the NEW controller wrote for the same
     // numeric id (#6432 round 4).
     const epoch = statesRef.current.get(tabId)?.promptEpoch ?? 0;
     dispatchTo(tabId, { type: "clearApproval" });
-    app.ApproveTab(tabId, id, allow, session, persist).catch(() => {
-      // The backend never actually resolved this prompt — undo the optimistic
-      // tombstone and ask it to replay, so the approval card can come back
-      // instead of being silently lost forever (#6432 round 3).
-      dispatchTo(tabId, { type: "submit_prompt_failed", id, epoch });
-      replayPendingPromptsForActiveTab(tabId);
-    });
+    resolvePromptForTab(app, tabId, id, "approval", { allow, session, persist }, promptState?.approval?.turnId ?? promptState?.activeTurnId, promptState?.approval?.runtimeEpoch ?? runtimeEpochByTabRef.current.get(tabId)).catch((error) => handlePromptFailure(dispatchTo, tabId, id, epoch, error, "approval"));
   }, [activeTabId, dispatchTo]);
 
   const resolvePlanDecision = useCallback((id: string, action: "start_execution" | "revise_plan" | "exit_plan") => {
     if (!activeTabId) return;
     const tabId = activeTabId;
+    const promptState = statesRef.current.get(tabId);
     const epoch = statesRef.current.get(tabId)?.promptEpoch ?? 0;
     dispatchTo(tabId, { type: "clearApproval" });
-    const request = typeof app.ResolvePlanDecisionTab === "function"
-      ? app.ResolvePlanDecisionTab(tabId, id, action)
-      : app.ApproveTab(tabId, id, action === "start_execution", false, false);
-    request.catch(() => {
-      dispatchTo(tabId, { type: "submit_prompt_failed", id, epoch });
-      replayPendingPromptsForActiveTab(tabId);
-    });
+    resolvePromptForTab(app, tabId, id, "plan", { action }, promptState?.approval?.turnId ?? promptState?.activeTurnId, promptState?.approval?.runtimeEpoch ?? runtimeEpochByTabRef.current.get(tabId)).catch((error) => handlePromptFailure(dispatchTo, tabId, id, epoch, error, "approval"));
   }, [activeTabId, dispatchTo]);
 
   const resolveRecovery = useCallback((id: string, action: "continue" | "continue_task" | "revise" | "stop", feedback = "") => {
     if (!activeTabId) return;
     const tabId = activeTabId;
+    const promptState = statesRef.current.get(tabId);
     const epoch = statesRef.current.get(tabId)?.promptEpoch ?? 0;
     dispatchTo(tabId, { type: "clearApproval" });
-    app.ResolveRecoveryTab(tabId, id, action, feedback).catch(() => {
-      dispatchTo(tabId, { type: "submit_prompt_failed", id, epoch });
-      replayPendingPromptsForActiveTab(tabId);
-    });
+    resolvePromptForTab(app, tabId, id, "recovery", { action, feedback }, promptState?.approval?.turnId ?? promptState?.activeTurnId, promptState?.approval?.runtimeEpoch ?? runtimeEpochByTabRef.current.get(tabId)).catch((error) => handlePromptFailure(dispatchTo, tabId, id, epoch, error, "approval"));
   }, [activeTabId, dispatchTo]);
 
   const answerQuestion = useCallback((id: string, answers: QuestionAnswer[]): Promise<void> => {
@@ -3947,10 +3982,11 @@ export function useController() {
     const tabId = activeTabId;
     const state = statesRef.current.get(tabId);
     const epoch = state?.promptEpoch ?? 0;
-    return answerPromptForActiveTurn(app, tabId, id, answers, state?.activeTurnId).then(
+    return answerPromptForActiveTurn(app, tabId, id, answers, state?.ask?.turnId ?? state?.activeTurnId, state?.ask?.runtimeEpoch ?? runtimeEpochByTabRef.current.get(tabId)).then(
       () => dispatchTo(tabId, { type: "ask_submit_succeeded", id, epoch }),
       (error) => {
-        dispatchTo(tabId, { type: "local_notice", level: "warn", text: t("notice.askSubmitFailed", { error: errorMessage(error) }), preserveRuntime: true });
+        if (isStalePromptError(error)) dispatchTo(tabId, { type: "expire_prompt", id, epoch, kind: "ask" });
+        else dispatchTo(tabId, { type: "local_notice", level: "warn", text: t("notice.askSubmitFailed", { error: errorMessage(error) }), preserveRuntime: true });
         void reconcileRuntimeAfterRejectedMutation(tabId);
         throw error;
       },
@@ -3961,10 +3997,10 @@ export function useController() {
     (id: string, action: "accept" | "decline" | "cancel", content?: Record<string, unknown>) => {
       if (!activeTabId) return;
       const tabId = activeTabId;
-      dispatchTo(tabId, { type: "clearAsk" });
-      app.AnswerMCPInteractionForTab(tabId, id, action, content ?? null).catch(() => {
-        replayPendingPromptsForActiveTab(tabId);
-      });
+      const promptState = statesRef.current.get(tabId);
+      const epoch = promptState?.promptEpoch ?? 0;
+      dispatchTo(tabId, { type: "expire_prompt", id, epoch, kind: "mcp" });
+      resolvePromptForTab(app, tabId, id, "mcp", { action, content: content ?? null }, promptState?.mcpInteraction?.turnId ?? promptState?.activeTurnId, promptState?.mcpInteraction?.runtimeEpoch ?? runtimeEpochByTabRef.current.get(tabId)).catch((error) => handlePromptFailure(dispatchTo, tabId, id, epoch, error, "mcp"));
     },
     [activeTabId, dispatchTo],
   );
@@ -4212,7 +4248,7 @@ export function useController() {
     if (!page) throw new Error(t("history.failedLoadHistory"));
     return asArray<SessionMeta>(page.items);
   }, []);
-  const listTrashedSessions = useCallback(async (): Promise<SessionMeta[]> => asArray<SessionMeta>(await app.ListTrashedSessions().catch(() => [])), []);
+  const listTrashedSessions = useCallback(async (): Promise<SessionMeta[]> => asArray<SessionMeta>(await app.ListTrashedSessions()), []);
   const retrySessionHistory = useCallback(async (tabId?: string) => {
     const id = tabId || activeTabIdRef.current; if (!id) return;
     const m = statesRef.current.get(id)?.meta;
@@ -4314,8 +4350,8 @@ export function useController() {
 
   const previewSession = useCallback(async (path: string): Promise<HistoryMessage[]> => asArray<HistoryMessage>(await app.PreviewSession(path).catch(() => [])), []);
   const deleteSession = useCallback((path: string) => app.DeleteSession(path).finally(() => invalidateCache()), []);
-  const restoreSession = useCallback((path: string) => app.RestoreSession(path).catch(() => {}).finally(() => invalidateCache()), []);
-  const purgeTrashedSession = useCallback((path: string) => app.PurgeTrashedSession(path).catch(() => {}).finally(() => invalidateCache()), []);
+  const restoreSession = useCallback((path: string) => app.RestoreSession(path).finally(() => invalidateCache()), []);
+  const purgeTrashedSession = useCallback((path: string) => app.PurgeTrashedSession(path).finally(() => invalidateCache()), []);
   const renameSession = useCallback((path: string, title: string) => app.RenameSession(path, title).catch(() => {}).finally(() => invalidateCache()), []);
   const refreshMeta = useCallback(async () => {
     if (!activeTabId) return;

@@ -2,6 +2,7 @@ package agent
 
 import (
 	"reasonix/internal/completion"
+	"reasonix/internal/provider"
 	"reasonix/internal/runtimepolicy"
 )
 
@@ -10,6 +11,7 @@ import (
 // State an external caller arms before a Run lives in pendingTurn; state that
 // outlives the Run lives in taskRuntime or sessionRuntime.
 type turnRuntime struct {
+	writeRecovery  map[string]provider.ToolCall // unresolved prior effects; reverified before reuse
 	runMaxSteps    int
 	runMaxStepsKey string
 
@@ -109,22 +111,7 @@ type turnRuntime struct {
 	sessionContext turnContextDiagnostics
 }
 
-// completionPhase bounds the completion-validation protocol: a candidate
-// terminal may trigger at most one continuation inside one Run, and after that
-// the run either validates or pauses — never loops.
-type completionPhase uint8
-
-const (
-	completionInitial completionPhase = iota
-	completionRepairing
-	completionValidated
-	completionPaused
-)
-
 // terminalProtocolState groups the run's terminal-protocol bookkeeping: the
-// bounded host repair nudges before a stop can be accepted, plus the
-// completion-validation phase. One named sub-state replaces independent
-// scalars whose cross-products were states no caller reasoned about.
 type terminalProtocolState struct {
 	// emptyFinalBlocks counts consecutive reasoning-only stops retried for a
 	// visible final answer.
@@ -134,8 +121,6 @@ type terminalProtocolState struct {
 	// contextToolRepairs counts contextual-tool repair rounds; a second
 	// violation after a repair ends the run in a recoverable pause.
 	contextToolRepairs int
-	// validation is the completion-validator phase for this run.
-	validation completionPhase
 }
 
 // pendingTurn is what someone outside the Run arms for the next one: a

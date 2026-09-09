@@ -275,43 +275,6 @@ type CLIConfig struct {
 	UpdateChannel string `toml:"update_channel"`
 }
 
-// DesktopConfig controls desktop-only UI preferences. It is intentionally
-// separate from top-level language and [ui] so desktop choices do not affect CLI
-// language, terminal colours, or provider-visible prompt/request data.
-type DesktopConfig struct {
-	Language                string   `toml:"language"`                   // auto|en|zh; empty/auto = browser/OS auto-detect
-	Currency                string   `toml:"currency"`                   // legacy display currency; migrated to [billing].display_currency
-	LayoutStyle             string   `toml:"layout_style"`               // classic|workbench|creation; desktop layout style
-	Theme                   string   `toml:"theme"`                      // auto|dark|light; empty resolves to auto
-	ThemeStyle              string   `toml:"theme_style"`                // graphite|aurora|slate|carbon|nocturne|amber and legacy aliases
-	TerminalTheme           string   `toml:"terminal_theme"`             // auto|dark|light; auto follows the desktop app theme
-	ExternalOpener          string   `toml:"external_opener"`            // preferred installed app used by the desktop Open control
-	CloseBehavior           string   `toml:"close_behavior"`             // quit|background; desktop window close behavior
-	DisplayMode             string   `toml:"display_mode"`               // standard|compact (legacy "minimal" maps to compact); transcript display mode
-	StatusBarStyle          string   `toml:"status_bar_style"`           // icon|text; desktop status bar metric labels
-	StatusBarItems          []string `toml:"status_bar_items"`           // ordered visible desktop status bar items
-	DefaultToolApprovalMode string   `toml:"default_tool_approval_mode"` // ask|auto|yolo; defaults to auto for newly-created desktop sessions
-	CheckUpdates            *bool    `toml:"check_updates"`              // startup update checks; nil keeps the default enabled
-	// UpdateChannel is a legacy compatibility field. It is accepted on read but
-	// ignored and omitted from future canonical writes.
-	UpdateChannel        string   `toml:"update_channel"`
-	Telemetry            *bool    `toml:"telemetry"`       // anonymous launch ping plus scrubbed next-launch native crash diagnostics; nil keeps the default enabled
-	Metrics              *bool    `toml:"metrics"`         // aggregate desktop metrics (anonymous signal/bucket counts, including lifecycle health; no content); nil keeps the default enabled
-	ProviderAccess       []string `toml:"provider_access"` // desktop-only list of provider entries shown in Settings > Model > Access
-	ExpandThinking       bool     `toml:"expand_thinking"` // deprecated compatibility alias: true maps to auto
-	ReasoningDisplayMode string   `toml:"reasoning_display_mode"`
-	ConversationWidth    string   `toml:"conversation_width"` // standard|full; max transcript width; empty = standard
-}
-
-// DesktopExternalOpener returns the selected opener id; unavailable ids fall
-// back to the platform file manager in the desktop shell.
-func (c *Config) DesktopExternalOpener() string {
-	if c == nil {
-		return ""
-	}
-	return strings.ToLower(strings.TrimSpace(c.Desktop.ExternalOpener))
-}
-
 // NotificationsConfig controls optional system notifications for CLI chat/run.
 type NotificationsConfig struct {
 	Enabled         bool `toml:"enabled"`
@@ -467,8 +430,7 @@ func (c *Config) DesktopTerminalTheme() string {
 	}
 }
 
-// DesktopLayoutStyle normalizes the desktop layout style. New installs default
-// to workbench; explicit classic remains respected.
+// DesktopLayoutStyle defaults to workbench; retired classic stays readable until startup migration persists its replacement.
 func (c *Config) DesktopLayoutStyle() string {
 	if strings.EqualFold(strings.TrimSpace(c.Desktop.ThemeStyle), "workbench") && strings.TrimSpace(c.Desktop.LayoutStyle) == "" {
 		return "workbench"
@@ -489,19 +451,6 @@ func (c *Config) DesktopCloseBehavior() string {
 // UICloseBehavior is the legacy name for DesktopCloseBehavior.
 func (c *Config) UICloseBehavior() string {
 	return c.DesktopCloseBehavior()
-}
-
-// DesktopDisplayMode normalizes the transcript display mode. Default is
-// "standard" (flat rendering, no folding).
-func (c *Config) DesktopDisplayMode() string {
-	switch strings.ToLower(strings.TrimSpace(c.Desktop.DisplayMode)) {
-	case "standard":
-		return "standard"
-	case "compact", "minimal":
-		return "compact"
-	default:
-		return "standard"
-	}
 }
 
 // DesktopConversationWidth returns the normalized desktop conversation width.
@@ -1316,8 +1265,8 @@ type AgentConfig struct {
 	VisionModel         string  `toml:"vision_model"`
 	GuardianModel       string  `toml:"guardian_model"`
 	GuardianTemperature float64 `toml:"guardian_temperature"`
-	// RecoveryModel optionally names a dedicated model for the independent
-	// recovery reviewer. Empty falls back to GuardianModel, then the main model.
+	// RecoveryModel names the optional recovery reviewer. Empty leaves
+	// rule-only recovery; it is not implied by guardian or the main model.
 	RecoveryModel string `toml:"recovery_model"`
 	// RecoveryTemperature is accepted from older configs but ignored. Auto
 	// Guard review is deterministic at temperature zero.
@@ -1388,8 +1337,8 @@ type AgentConfig struct {
 	// Plan bash calls now use the ordinary Permissions classifier and Sandbox.
 	PlanModeReadOnlyCommands []string `toml:"plan_mode_read_only_commands"`
 	LegacyAnchorSafetyGate   bool     `toml:"legacy_anchor_safety_gate"`  // user-global rollback to the full-read guard
-	CompletionValidation     string   `toml:"completion_validation"`      // off|shadow|enforce; empty defaults to enforce
-	CompletionEvaluatorModel string   `toml:"completion_evaluator_model"` // empty follows the working model
+	CompletionValidation     string   `toml:"completion_validation"`      // retired; retained for old config reads
+	CompletionEvaluatorModel string   `toml:"completion_evaluator_model"` // retired; ignored
 }
 
 // ProviderEntry declares a model provider instance. ContextWindow is the model's
@@ -1454,19 +1403,16 @@ type ProviderEntry struct {
 	// and image tokens are heavy — gating keeps text-only flows cheap (the prompt
 	// prefix is byte-identical with no image, so the cache is unaffected either way).
 	Vision bool `toml:"vision"`
-	// VisionModels narrows image input support to specific models in a multi-model
-	// provider. This lets one provider expose both text-only and multimodal chat
-	// models without enabling image payloads for every model.
+	// VisionModels is legacy; new settings use model-level ModelOverrides.Vision.
+	// Keep this field readable for existing configurations.
 	VisionModels []string `toml:"vision_models"`
 	// VisionDetail sets the openai image_url detail hint (low|high); empty = auto
 	// (the field is omitted). "low" caps an image to a fixed ~85 tokens for cheap
 	// coarse reads; ignored by providers without the knob (e.g. anthropic).
 	VisionDetail string `toml:"vision_detail"`
-	// WebSearch controls the provider-executed web_search tool for compatible
-	// Anthropic and Responses endpoints. Nil lets official DeepSeek endpoints use
-	// their product default; non-nil preserves an explicit user choice across
-	// config rewrites. DeepSeek returns web_search_tool_result blocks on the
-	// Anthropic wire and response.web_search_call events on the Responses wire.
+	// WebSearch enables independent search with this account. Nil uses the
+	// official DeepSeek default; explicit values and legacy native search
+	// history survive config rewrites.
 	WebSearch *bool `toml:"web_search"`
 	// ReasoningProtocol selects the request shape for OpenAI-compatible reasoning
 	// models. Empty/auto uses the model capability registry plus endpoint
@@ -1664,9 +1610,14 @@ func (e *ProviderEntry) modelOverrideForModel(model string) (ProviderModelOverri
 	if ov, ok := e.ModelOverrides[model]; ok {
 		return ov, true
 	}
-	for k, ov := range e.ModelOverrides {
+	keys := make([]string, 0, len(e.ModelOverrides))
+	for k := range e.ModelOverrides {
+		keys = append(keys, k)
+	}
+	slices.Sort(keys)
+	for _, k := range keys {
 		if strings.EqualFold(strings.TrimSpace(k), model) {
-			return ov, true
+			return e.ModelOverrides[k], true
 		}
 	}
 	return ProviderModelOverride{}, false
@@ -1889,7 +1840,7 @@ const LanguagePolicy = `Reply in the same language the user is using in their mo
 // Default returns the built-in default configuration.
 func Default() *Config {
 	return &Config{
-		ConfigVersion:    7,
+		ConfigVersion:    8,
 		DefaultModel:     "deepseek-flash",
 		CredentialsStore: CredentialsStoreAuto,
 		UI:               UIConfig{Theme: "auto", ShowTurnUsage: true},
@@ -1947,12 +1898,11 @@ func Default() *Config {
 			Dingtalk:           DingtalkBotConfig{RequireMention: true},
 			Weixin:             WeixinBotConfig{AccountID: "default", TokenEnv: "WEIXIN_BOT_TOKEN", APIBase: "https://ilinkai.weixin.qq.com"},
 		},
-		// New installs use DeepSeek's Anthropic-compatible Messages endpoint so
-		// provider-executed web search is available by default. Existing explicit
-		// provider entries are merged on top, keeping their configured protocol.
+		// Main conversations use Chat Completions; independent web_search uses
+		// the official Messages endpoint with the same account.
 		Providers: []ProviderEntry{
 			{
-				Name: "deepseek-flash", Kind: "anthropic", BaseURL: deepSeekAnthropicBaseURL,
+				Name: "deepseek-flash", Kind: "openai", BaseURL: "https://api.deepseek.com",
 				Model: "deepseek-v4-flash", APIKeyEnv: "DEEPSEEK_API_KEY",
 				BalanceURL: "https://api.deepseek.com/user/balance", Thinking: "enabled",
 				WebSearch: boolPointer(true), SupportedEfforts: []string{"disabled", "low", "high", "max"}, DefaultEffort: "high",
@@ -1960,7 +1910,7 @@ func Default() *Config {
 				BillingCurrency: "USD", BillingMode: "payg",
 			},
 			{
-				Name: "deepseek-pro", Kind: "anthropic", BaseURL: deepSeekAnthropicBaseURL,
+				Name: "deepseek-pro", Kind: "openai", BaseURL: "https://api.deepseek.com",
 				Model: "deepseek-v4-pro", APIKeyEnv: "DEEPSEEK_API_KEY",
 				BalanceURL: "https://api.deepseek.com/user/balance", Thinking: "enabled",
 				WebSearch: boolPointer(true), SupportedEfforts: []string{"disabled", "low", "high", "max"}, DefaultEffort: "high",

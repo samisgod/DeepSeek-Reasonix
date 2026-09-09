@@ -17,7 +17,6 @@ type agentConfig struct {
 	// triggers one host reassessment nudge. ProgressBudgetRoundsOff disables
 	// both that nudge and the Goal-only re-plan redirect that follows it.
 	progressBudgetRounds int
-	completionAgentConfig
 	// workspaceID is a prompt-cache lineage component, so it must not move
 	// while an agent lives — a change would silently rekey the cache.
 	workspaceID string

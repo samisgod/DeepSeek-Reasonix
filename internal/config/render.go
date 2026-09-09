@@ -104,7 +104,7 @@ func RenderTOMLForScope(c *Config, scope RenderScope) string {
 		if currency := c.DesktopCurrency(); currency != "" {
 			fmt.Fprintf(&b, "currency = %q   # legacy display currency; prefer [billing].display_currency\n", currency)
 		}
-		fmt.Fprintf(&b, "layout_style = %q   # desktop layout: classic|workbench|creation\n", c.DesktopLayoutStyle())
+		fmt.Fprintf(&b, "layout_style = %q   # desktop layout: workbench|creation; legacy classic migrates to workbench\n", c.DesktopLayoutStyle())
 		fmt.Fprintf(&b, "theme = %q   # desktop only: auto|dark|light\n", c.DesktopTheme())
 		fmt.Fprintf(&b, "terminal_theme = %q   # integrated terminal: auto|dark|light; auto follows the desktop app\n", c.DesktopTerminalTheme())
 		if style := c.DesktopThemeStyle(); style != "" {
@@ -130,13 +130,13 @@ func RenderTOMLForScope(c *Config, scope RenderScope) string {
 		if c.Desktop.ProviderAccess != nil {
 			fmt.Fprintf(&b, "provider_access = %s   # desktop settings: providers shown on Settings > Model > Access\n", renderStringArray(c.Desktop.ProviderAccess))
 		}
+		renderDesktopSessionExperience(&b, c)
 		renderDesktopReasoningDisplayMode(&b, c)
 		fmt.Fprintf(&b, "display_mode = %q   # desktop: standard|compact transcript display mode\n", c.DesktopDisplayMode())
 		if width := c.DesktopConversationWidth(); width == "full" {
 			fmt.Fprintf(&b, "conversation_width = %q   # desktop: standard|full transcript width; empty = standard\n", width)
 		}
 		b.WriteString("\n")
-
 		b.WriteString("[billing]\n")
 		if pref := c.DisplayCurrencyPref(); pref != "" {
 			fmt.Fprintf(&b, "display_currency = %q   # auto|CNY|USD; display only — does not rewrite provider list prices\n", pref)
@@ -393,7 +393,7 @@ func RenderTOMLForScope(c *Config, scope RenderScope) string {
 				fmt.Fprintf(&b, "vision_detail = %q   # openai image detail hint: low|high; empty = auto\n", p.VisionDetail)
 			}
 			if p.WebSearch != nil {
-				fmt.Fprintf(&b, "web_search  = %t   # provider-executed web_search tool; omitted defaults on for supported official DeepSeek APIs\n", *p.WebSearch)
+				fmt.Fprintf(&b, "web_search  = %t   # independent web_search tool; omitted defaults on for supported official DeepSeek APIs\n", *p.WebSearch)
 			}
 			if p.ReasoningProtocol != "" {
 				fmt.Fprintf(&b, "reasoning_protocol = %q   # auto|deepseek|glm|kimi-k3|openai|none; overrides model/endpoint reasoning detection\n", p.ReasoningProtocol)

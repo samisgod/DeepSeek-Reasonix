@@ -20,6 +20,7 @@ import (
 	"reasonix/internal/event"
 	"reasonix/internal/evidence"
 	"reasonix/internal/extension/dispatch"
+	"reasonix/internal/i18n"
 	"reasonix/internal/instruction"
 	"reasonix/internal/jobs"
 	"reasonix/internal/mcpinteraction"
@@ -46,8 +47,8 @@ var deprecatedContextRetentionWarning sync.Once
 const maxEmptyFinalBlocks = 3
 
 // maxStreamRecoveries is the number of body-phase stream retries after the
-// initial sampling attempt (Codex-aligned default: 1 + 5 = 6 attempts total).
-const maxStreamRecoveries = 5
+// initial sampling attempt (Pi-style default: 1 + 3 = 4 attempts total).
+const maxStreamRecoveries = 3
 const maxSamplingAttempts = maxStreamRecoveries + 1
 const maxExecutorHandoffNudges = 1
 
@@ -292,6 +293,7 @@ type Agent struct {
 	reasoningLanguage    atomic.Value // string: auto|zh|en
 
 	requireVisibleFinal bool // internal callers require final Content
+	continuationPolicy  ContinuationPolicy
 
 	// unwrittenResolve is the resolve watermark a failed state write still owes.
 	// It outlives the conversation, which is why it is not in sessionRuntime.
@@ -790,8 +792,10 @@ func (a *Agent) flushSteerQueue() {
 
 // UnappliedSteerNotice returns the durable warning shown for guidance that was
 // accepted during an abnormal turn exit but never reached a provider request.
+// The user's guidance rides the format's trailing %s so fronts can split it
+// back out at the first newline.
 func UnappliedSteerNotice(text string) string {
-	return "Guidance was not applied because the turn ended before it could be processed. Send it again if it is still needed:\n" + text
+	return fmt.Sprintf(i18n.M.UnappliedSteerFmt, text)
 }
 
 // RecordUnappliedSteer stores guidance that could not affect its intended
@@ -835,7 +839,12 @@ func (a *Agent) CompactRatio() float64 { return a.compactRatio }
 
 // CompactNow forces one projection compaction (canonical transcript untouched).
 func (a *Agent) CompactNow(ctx context.Context, instructions string) error {
-	_, err := a.contextManager().Prepare(ctx, ContextPreparePolicy{Trigger: CompactionTriggerManual, Instructions: instructions, Force: true})
+	_, err := a.contextManager().Prepare(ctx, ContextPreparePolicy{
+		Trigger:              CompactionTriggerManual,
+		Instructions:         instructions,
+		Force:                true,
+		AllowChunkedFallback: true,
+	})
 	return err
 }
 
@@ -873,6 +882,9 @@ type Options struct {
 	ModelRef string
 	// RequireVisibleFinal makes internal callers reject reasoning-only responses.
 	RequireVisibleFinal bool
+	// ContinuationPolicy is the internal host policy for synthetic same-Run
+	// continuation. The zero value (ContinuationDisabled) is the product default.
+	ContinuationPolicy ContinuationPolicy
 	// Gate is the per-call permission gate. nil disables gating.
 	Gate Gate
 	// ReadOnlyExecution enables a permanent host-side read-only boundary for
@@ -1025,10 +1037,6 @@ type Options struct {
 	// delete_range to the pre-fingerprint full-file fresh-read requirement.
 	// It never enters provider-visible prompts or tool schemas.
 	LegacyAnchorSafetyGate bool
-
-	CompletionEvaluator        CompletionEvaluator
-	CompletionEvaluatorFactory CompletionEvaluatorFactory
-	CompletionValidation       string
 }
 
 // New constructs an Agent. MaxSteps <= 0 means no cap — the run loop continues
@@ -1104,7 +1112,6 @@ func New(prov provider.Provider, tools *tool.Registry, session *Session, opts Op
 			recentKeep:             opts.RecentKeep,
 			archiveDir:             opts.ArchiveDir,
 			legacyAnchorSafetyGate: opts.LegacyAnchorSafetyGate,
-			completionAgentConfig:  newCompletionAgentConfig(opts, sink),
 		},
 		sess: sessionRuntime{
 			conversation: session,
@@ -1116,6 +1123,7 @@ func New(prov provider.Provider, tools *tool.Registry, session *Session, opts Op
 			budget: runBudget{limit: normalizeTaskBudget(opts.TaskBudget)},
 		},
 		requireVisibleFinal: opts.RequireVisibleFinal,
+		continuationPolicy:  opts.ContinuationPolicy,
 		recovery: recoveryIdentity{
 			agentID: strings.TrimSpace(opts.RecoveryAgentID),
 			taskID:  strings.TrimSpace(opts.RecoveryTaskID),
@@ -1142,7 +1150,7 @@ func New(prov provider.Provider, tools *tool.Registry, session *Session, opts Op
 	if warnDeprecatedRetention {
 		deprecatedContextRetentionWarning.Do(func() {
 			a.svc.sink.Emit(event.Event{Kind: event.Notice, Level: event.LevelWarn,
-				Text:   "agent.keep and agent.recent_keep are deprecated.",
+				Text:   i18n.M.DeprecatedContextRetention,
 				Detail: "Harness-style compaction now retains only the newest 16% of the context window; legacy retention fields are preserved in configuration but ignored at runtime."})
 		})
 	}
@@ -1227,6 +1235,11 @@ func (a *Agent) reserveParentWrite(runTool tool.Tool, args json.RawMessage, read
 // adaptive stop is the no-progress ladder rather than a round count. Turn policy
 // lives in beginRunTurn / runToolLoop / handleFinalResponse / handleToolRound.
 func (a *Agent) Run(ctx context.Context, input string) (runErr error) {
+	if err := a.prepareProtocolRecovery(ctx); err != nil {
+		return err
+	}
+	a.restoreProtocolProjection()
+	ctx = a.withProviderCacheSession(ctx)
 	runMaxSteps := a.maxSteps
 	runMaxStepsKey := a.maxStepsKey
 	a.recovery.runSeq.Add(1)
@@ -1692,34 +1705,12 @@ func hasVisibleFinalAnswer(text string) bool {
 	return strings.TrimSpace(text) != ""
 }
 
-// reasoningOnlyFinishHonoured reports whether the model finished with a stop
-// signal but placed its answer in the reasoning stream rather than the content
-// block. DeepSeek thinking mode does this occasionally: it streams a long
-// reasoning_content, then returns finish_reason="stop" with an empty content.
-// The model has signalled completion, so the host accepts the turn instead of
-// retrying and forcing another expensive thinking round.
-//
-// The accept is scoped to DeepSeek thinking mode (ToolCallReasoningPolicy):
-// for other providers a reasoning-only turn keeps the empty-final retry
-// safety net — local <think>-tag models often recover a visible answer on
-// the second attempt, and a gateway that mislabels truncation as "stop"
-// must not have a degenerate turn committed as the final answer.
-func reasoningOnlyFinishHonoured(p provider.Provider, u *provider.Usage, reasoning string) bool {
-	if !provider.RequiresToolCallReasoning(p) {
-		return false
-	}
-	if u == nil || u.FinishReason != "stop" {
-		return false
-	}
-	return strings.TrimSpace(reasoning) != ""
-}
-
 func emptyFinalRetryMessage() string {
 	return "The previous assistant response finished without any visible answer text. Continue the same task now and provide a concise visible answer to the user. Do not send reasoning only."
 }
 
 func emptyFinalNotice() string {
-	return "No visible answer was produced; asking the assistant to respond again."
+	return i18n.M.EmptyFinal
 }
 
 func emptyFinalNoticeDetail(prov string, u *provider.Usage, reasoningLen int) string {
@@ -1731,11 +1722,11 @@ func emptyFinalNoticeDetail(prov string, u *provider.Usage, reasoningLen int) st
 }
 
 func executorHandoffNoticeText() string {
-	return "The assistant answered before taking action; asking it to use the required tools."
+	return i18n.M.ExecutorHandoff
 }
 
 func toolBudgetNoticeText() string {
-	return "Tool round limit reached; asking the assistant to summarize progress."
+	return i18n.M.ToolBudget
 }
 
 // stream runs one completion, emitting reasoning and text deltas as typed
@@ -1757,7 +1748,6 @@ func (a *Agent) streamWithFrozen(ctx context.Context, turn int, sink event.Sink,
 	// Reuse a parent attempt counter when present so stream retries accumulate
 	// into one RequestCount; otherwise install a fresh counter for this call.
 	ctx = provider.WithRequestAttemptCounter(ctx)
-	ctx = a.withMissingReasoningFallback(ctx)
 	// A stream can terminate locally before the provider channel closes (for
 	// example when the client-side reasoning guard fires). Own a child context
 	// here so every return path aborts the HTTP request and releases the provider
@@ -1790,14 +1780,12 @@ func (a *Agent) streamWithFrozen(ctx context.Context, turn int, sink event.Sink,
 	transformReasoning := a.svc.hooks != nil && a.svc.hooks.HasPostLLMCall()
 
 	var text, reasoning strings.Builder
-	var signature string                    // provider-issued proof for the reasoning (Anthropic thinking)
-	var reasoningID, reasoningStatus string // Responses reasoning item id/status (meta chunk)
+	meta := reasoningStreamMeta{complete: true}
 	var calls []provider.ToolCall
 	var responsesItems []json.RawMessage
 	search := newSearchTurn()
 	var partialCalls []provider.ToolCall
 	var usage *provider.Usage
-	reasoningComplete := true
 	var partialToolStarted bool
 	var maxArgChars int
 	var lastArgProgress time.Time
@@ -1805,8 +1793,9 @@ func (a *Agent) streamWithFrozen(ctx context.Context, turn int, sink event.Sink,
 	// finishReasoning output that becomes the round-tripped reasoning.
 	collect := func(stored string, err error) streamedTurn {
 		return streamedTurn{
-			text: text.String(), reasoning: stored, signature: signature,
-			reasoningID: reasoningID, reasoningStatus: reasoningStatus, reasoningComplete: reasoningComplete,
+			text: text.String(), reasoning: stored, signature: meta.signature,
+			reasoningID: meta.id, reasoningStatus: meta.status, reasoningComplete: meta.complete,
+			reasoningState: meta.state, thinkingBlocks: meta.blocks,
 			calls: calls, responsesItems: responsesItems, serverSearch: search.calls, usage: usage,
 			partialToolStarted: partialToolStarted, partialCalls: partialCalls,
 			maxArgChars: maxArgChars, err: err,
@@ -1822,7 +1811,7 @@ func (a *Agent) streamWithFrozen(ctx context.Context, turn int, sink event.Sink,
 			}
 		}
 		stored = display
-		if a.preserveRawReasoning(signature, reasoningID, reasoningStatus, calls, search.calls) {
+		if a.preserveRawReasoning(original, meta.signature, meta.id, meta.status, calls, search.calls) {
 			stored = original
 		}
 		return stored, display
@@ -1848,17 +1837,19 @@ func (a *Agent) streamWithFrozen(ctx context.Context, turn int, sink event.Sink,
 				// response before it is persisted. A replacement becomes the
 				// visible assistant turn (the user's transcript); a block fails
 				// the turn.
-				providerSignature := signature
-				finalText, finalReasoning, signature, calls, usage, err := a.interceptProviderResponse(
-					ctx, text.String(), stored, signature, calls, usage)
+				providerSignature := meta.signature
+				finalText, finalReasoning, finalSignature, calls, usage, err := a.interceptProviderResponse(
+					ctx, text.String(), stored, meta.signature, calls, usage)
 				if err != nil {
 					return streamedTurn{partialToolStarted: partialToolStarted, partialCalls: partialCalls, maxArgChars: maxArgChars, err: err}
 				}
 				// Responses reasoning IDs/status and Anthropic signatures are
 				// provider-bound metadata. Never attach the provider's metadata
 				// to reasoning that an extension replaced.
-				if finalReasoning != stored || signature != providerSignature {
-					reasoningID, reasoningStatus = "", ""
+				if finalReasoning != stored || finalSignature != providerSignature {
+					meta.id, meta.status = "", ""
+					meta.blocks = nil
+					responsesItems = provider.WithoutResponsesReasoning(responsesItems)
 				}
 				if finalReasoning != stored {
 					// The extension replaced the reasoning: what is persisted
@@ -1876,10 +1867,11 @@ func (a *Agent) streamWithFrozen(ctx context.Context, turn int, sink event.Sink,
 				// A clean terminal never reports partialToolStarted: the calls
 				// slice is now authoritative and the partial cards were merged.
 				return streamedTurn{
-					text: finalText, reasoning: finalReasoning, signature: signature,
-					reasoningID: reasoningID, reasoningStatus: reasoningStatus,
-					reasoningComplete: reasoningComplete,
-					calls:             calls, responsesItems: responsesItems, serverSearch: search.calls, usage: usage,
+					text: finalText, reasoning: finalReasoning, signature: finalSignature,
+					reasoningID: meta.id, reasoningStatus: meta.status,
+					reasoningComplete: meta.complete,
+					reasoningState:    meta.state, thinkingBlocks: meta.blocks,
+					calls: calls, responsesItems: responsesItems, serverSearch: search.calls, usage: usage,
 					partialCalls: partialCalls, maxArgChars: maxArgChars,
 				}
 			}
@@ -1887,25 +1879,10 @@ func (a *Agent) streamWithFrozen(ctx context.Context, turn int, sink event.Sink,
 		}
 		switch chunk.Type {
 		case provider.ChunkReasoning:
-			reasoning.WriteString(chunk.Text)
-			if chunk.Signature != "" {
-				signature = chunk.Signature
-			}
-			// 元数据 chunk（空 Text）：reasoning item id/status 贯通
-			// SSE → session → 下一轮回传（评审 #7234 第 1 点）。
-			if chunk.ReasoningID != "" {
-				reasoningID = chunk.ReasoningID
-			}
-			if chunk.ReasoningStatus != "" {
-				reasoningStatus = chunk.ReasoningStatus
-			}
+			meta.ingest(chunk, &reasoning, a.reasoningByteLimit)
 			if chunk.Text != "" && !transformReasoning {
 				sink.Emit(event.Event{Kind: event.Reasoning, Text: chunk.Text})
 			}
-			// Bound stored hidden reasoning only. Do not cancel the provider
-			// stream: official DeepSeek bills this output and still needs to
-			// emit the visible answer or tool calls.
-			reasoningComplete = boundReasoningReplay(&reasoning, chunk.Text, a.reasoningByteLimit, reasoningComplete)
 		case provider.ChunkText:
 			text.WriteString(chunk.Text)
 			sink.Emit(event.Event{Kind: event.Text, Text: chunk.Text})
@@ -1947,9 +1924,7 @@ func (a *Agent) streamWithFrozen(ctx context.Context, turn int, sink event.Sink,
 				}
 			}
 		case provider.ChunkResponsesItem:
-			if len(chunk.ResponsesItem) > 0 {
-				responsesItems = append(responsesItems, append(json.RawMessage(nil), chunk.ResponsesItem...))
-			}
+			responsesItems = meta.ingestResponsesItem(responsesItems, chunk.ResponsesItem, a.reasoningByteLimit)
 		case provider.ChunkServerSearch:
 			search.onChunk(sink, chunk, attemptID)
 		case provider.ChunkUsage:
@@ -1990,6 +1965,7 @@ func bestEffortStreamUsage(current *provider.Usage, textBytes, reasoningBytes in
 		return nil
 	}
 	var usage provider.Usage
+	usage.Unknown = current == nil
 	if current != nil {
 		usage = *current
 	}
@@ -2041,6 +2017,7 @@ func upsertPartialToolCall(calls []provider.ToolCall, call provider.ToolCall) []
 func (a *Agent) recordInterruptedDisplay(text, reasoning string, calls []provider.ToolCall, pending bool, workDurationMs int64) {
 	displayCalls := make([]provider.ToolCall, 0, len(calls))
 	interrupted := make([]string, 0, len(calls))
+	notStarted := make([]provider.InterruptedToolSummary, 0, len(calls))
 	seen := make(map[string]struct{}, len(calls))
 	for _, call := range calls {
 		name := strings.TrimSpace(call.Name)
@@ -2052,6 +2029,7 @@ func (a *Agent) recordInterruptedDisplay(text, reasoning string, calls []provide
 		displayCalls = append(displayCalls, provider.ToolCall{ID: call.ID, Name: name})
 		if name != "" {
 			interrupted = append(interrupted, name)
+			notStarted = append(notStarted, provider.InterruptedToolSummary{ID: call.ID, Name: name})
 		}
 	}
 	a.sess.conversation.Add(provider.Message{
@@ -2066,6 +2044,7 @@ func (a *Agent) recordInterruptedDisplay(text, reasoning string, calls []provide
 		InterruptedTurn: &provider.InterruptedTurnRecovery{
 			Pending:                 pending,
 			InterruptedTools:        interrupted,
+			NotStartedTools:         notStarted,
 			DroppedPartialText:      strings.TrimSpace(text) != "",
 			DroppedPartialReasoning: strings.TrimSpace(reasoning) != "",
 		},
@@ -2806,7 +2785,7 @@ func truncateToolOutputFor(s, toolName, toolCallID string) (string, string) {
 		}
 		marker = toolOutputRecoveryMarker(toolName, toolCallID, resultRef, len(s), len(head)+len(tail))
 	}
-	notice := fmt.Sprintf("tool output truncated: %d of %d bytes elided", len(s)-len(head)-len(tail), len(s))
+	notice := fmt.Sprintf(i18n.M.ToolOutputTruncatedFmt, len(s)-len(head)-len(tail), len(s))
 	return head + marker + tail, notice
 }
 
@@ -2819,11 +2798,11 @@ func finishReasonMessage(u *provider.Usage) (string, bool) {
 	}
 	switch u.FinishReason {
 	case "length":
-		return "response truncated: hit max output tokens", true
+		return i18n.M.FinishReasonLength, true
 	case "content_filter":
-		return "response blocked by content filter", true
+		return i18n.M.FinishReasonContentFilter, true
 	case "repetition_truncation":
-		return "response truncated: model repetition detected", true
+		return i18n.M.FinishReasonRepetition, true
 	default:
 		return "", false
 	}
@@ -2836,11 +2815,11 @@ func finishReasonMessage(u *provider.Usage) (string, bool) {
 func streamInterruptNotice(err error) (code, text string) {
 	switch provider.StreamInterruptReason(err) {
 	case provider.StreamInterruptIdleTimeout:
-		return event.NoticeCodeStreamInterruptedIdleTimeout, "model stream stalled: no data arrived before the idle timeout; check the provider gateway or network proxy"
+		return event.NoticeCodeStreamInterruptedIdleTimeout, i18n.M.StreamInterruptedIdleTimeout
 	case provider.StreamInterruptPrematureEOF:
-		return event.NoticeCodeStreamInterruptedPrematureEOF, "model stream ended before completion; the provider gateway or network proxy dropped the connection"
+		return event.NoticeCodeStreamInterruptedPrematureEOF, i18n.M.StreamInterruptedPrematureEOF
 	case provider.StreamInterruptConnectionReset:
-		return event.NoticeCodeStreamInterruptedConnectionReset, "model connection was reset; check the provider gateway or network proxy"
+		return event.NoticeCodeStreamInterruptedConnectionReset, i18n.M.StreamInterruptedConnectionReset
 	default:
 		return "", ""
 	}

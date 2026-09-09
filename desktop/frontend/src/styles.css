@@ -2105,6 +2105,9 @@ a[href] {
   --statusbar-height: 0px;
 }
 
+/* Automation is a focused main page. These rules only remove presentation
+   rows; workspace and terminal preferences remain in their stores. */
+
 .app--darwin .layout {
   --app-chrome-height: 44px;
   --chrome-toggle-size: 36px;
@@ -3438,15 +3441,12 @@ a[href] {
   }
 }
 .transcript {
-  /* Virtuoso sizes rows from the scroller clientWidth (padding included) but
-     lays them out in the content box. Horizontal padding here therefore makes
-     right-aligned bubbles extend under the workspace dock. Keep only vertical
-     inset on the scroller; rows own --transcript-inline-pad. */
+  /* Keep horizontal inset on blocks so the native scroller's geometry is
+     independent of readable content width. */
   --transcript-inline-pad: 32px;
   position: relative;
-  /* Virtuoso owns the logical anchor. Browser scroll anchoring reacts to
-     asynchronous Markdown boxes before Virtuoso receives their size and can
-     move the scroller in the opposite direction during an upward gesture. */
+  /* TranscriptKernel owns logical anchors and applies at most one structural
+     correction per geometry revision. */
   overflow-anchor: none;
   height: 100%;
   overflow-y: auto;
@@ -3505,29 +3505,6 @@ a[href] {
 @media (prefers-reduced-motion: reduce) {
   .transcript-navigation-overlay__spinner { animation: none; }
 }
-/* The active turn streams as the virtual list's in-flow Footer: inside the
-   scroller, right after the last history row, but outside Virtuoso's
-   measured size tree — unbounded growth never reaches the list's anchors or
-   recovery machinery (#8657/#8688). */
-.transcript__live-region {
-  position: relative;
-  width: 100%;
-}
-.transcript__live-region--overlay {
-  position: absolute;
-  inset-inline: 0;
-  bottom: 0;
-  z-index: var(--z-local-raised);
-  pointer-events: none;
-}
-.transcript__live-content {
-  position: relative;
-  width: 100%;
-}
-.transcript[data-transcript-reader-visual-guard="true"] [data-testid="virtuoso-item-list"] {
-  transform: translateY(var(--transcript-reader-visual-offset, 0));
-  will-change: transform;
-}
 .transcript__live-status {
   display: flex;
   align-items: center;
@@ -3547,42 +3524,28 @@ a[href] {
   margin-right: auto;
 }
 
-/* ── Virtual transcript rows ─────────────────────────────────────── */
-/* React Virtuoso owns list offsets and row measurement. Rows stay in normal
-/* React Virtuoso owns list offsets and row measurement. Rows stay in normal
-   flow; flow-root contains child margins so ResizeObserver sees the complete
-   dynamic height instead of a collapsed margin outside the measured item. */
-.transcript__virtual-sizer {
+/* ── Transcript projection and window adapter ───────────────────── */
+.transcript__projection,
+.transcript__block,
+.transcript__resident-tail {
   position: relative;
+}
+.transcript > .transcript__projection {
+  max-width: none;
+  margin-left: 0;
+  margin-right: 0;
+}
+.transcript__block {
+  display: flow-root;
+}
+.transcript__window-item {
+  box-sizing: border-box;
   width: 100%;
-}
-.transcript > .transcript__virtual-sizer {
-  max-width: none;
-  margin-left: 0;
-  margin-right: 0;
-}
-.transcript > [data-viewport-type="element"] {
-  max-width: none;
-  margin-left: 0;
-  margin-right: 0;
-  /* Virtuoso's inline style pins only top (position:absolute; top:0;
-     width:100%). With the scroller's horizontal padding, width:100%
-     resolves against the padding box and starts at padding-left, so the
-     right edge overflows past the content box and gets clipped by
-     overflow-x:hidden. Pin left/right to the content box edges instead
-     (following --transcript-pad-x) so rows keep the scroller's padding
-     on both sides and never overflow. */
-  left: var(--transcript-pad-x, 32px);
-  right: var(--transcript-pad-x, 32px);
-  /* Virtuoso sets width:100% inline; without !important the inline width
-     wins over left/right and right-edge clipping returns. */
-  width: auto !important;
 }
 .transcript__row {
   position: relative;
   display: flow-root;
   box-sizing: border-box;
-  width: 100%;
   padding-left: var(--transcript-inline-pad, 32px);
   padding-right: var(--transcript-inline-pad, 32px);
 }
@@ -3638,7 +3601,7 @@ a[href] {
 .history-preview__body .transcript__row > * {
   max-width: none;
 }
-/* Keep the lazy Markdown source readable while Virtuoso waits for the real
+/* Keep the lazy Markdown source readable while the parser resolves the real
    parser result. The row itself remains free to measure once the marker is
    removed; no manual-scroll path writes a forced row height. */
 .transcript__row .msg--assistant .msg__body > .md[data-transcript-geometry-pending] {
@@ -3646,8 +3609,7 @@ a[href] {
   height: max(0px, calc(var(--transcript-row-estimate) - 32px));
   overflow: hidden;
 }
-/* Offscreen rows are unmounted by the virtualizer, so content-visibility
-/* Offscreen rows are unmounted by the virtualizer, so content-visibility
+/* Offscreen blocks are unmounted by the window adapter, so content-visibility
    culling is redundant inside rows — and skipping it keeps offsetHeight
    measurements exact instead of contain-intrinsic-size placeholders. */
 .transcript__row .msg,
@@ -3660,7 +3622,7 @@ a[href] {
   content-visibility: visible;
   contain-intrinsic-size: none;
 }
-.transcript__jump-bottom {
+.transcript__jump-bottom:not([hidden]) {
   --wails-draggable: no-drag;
   position: absolute;
   left: 50%;
@@ -4295,13 +4257,9 @@ a[href] {
   content-visibility: auto;
   contain-intrinsic-size: 1px 60px;
 }
-/* Virtuoso already owns transcript virtualization. A second content-visibility
-/* Virtuoso already owns transcript virtualization. A second content-visibility
- * viewport inside each mounted row gives the browser a 60px intrinsic box and
- * then expands it when the row crosses the viewport, which makes Virtuoso's
- * upward compensation write a large reverse frame during manual reading. Keep
- * content-visibility for non-transcript message lists, but let the transcript
- * size tree see the real row geometry from its first mount. */
+/* The transcript window adapter already bounds mounted blocks. A second
+ * content-visibility viewport would replace real measurements with an
+ * intrinsic placeholder, so keep it only for non-transcript message lists. */
 .transcript__row .msg {
   content-visibility: visible;
   contain-intrinsic-size: auto;
@@ -6616,6 +6574,20 @@ body > .mermaid-diagram--fullscreen {
   overflow-y: auto;
   color: inherit;
 }
+.tool__subagent-outcome {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  margin: 4px 0 8px;
+  padding: 8px 10px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--bg-soft);
+  font-family: var(--font-code-family);
+  font-size: var(--font-caption);
+}
+.tool__subagent-outcome-status { color: var(--fg-dim); }
+.tool__subagent-outcome code { overflow-wrap: anywhere; }
 .tool__nested-count {
   display: inline-flex;
   align-items: center;
@@ -9115,10 +9087,75 @@ body > .mermaid-diagram--fullscreen {
   display: none;
 }
 
+/* Shared harness-style decision surface. Ask adds its own fields and pager;
+   every other PromptShelf keeps its domain controls inside this same visual
+   frame so approvals, forms, and MCP interactions read as one product. */
+.prompt-shelf--harness .prompt-shelf__card {
+  border-radius: 20px;
+  padding: 8px 12px 10px;
+  background: var(--bg-elev);
+  border-color: color-mix(in srgb, var(--accent) 34%, var(--border-soft));
+}
+.prompt-shelf--harness .prompt-shelf__header {
+  align-items: center;
+  gap: 16px;
+  padding: 10px 4px 12px;
+}
+.prompt-shelf--harness .prompt-shelf__heading {
+  font-size: 16px;
+  font-weight: 650;
+}
+.prompt-shelf--harness .prompt-shelf__meta {
+  font-size: 14px;
+}
+.prompt-shelf--harness .prompt-shelf__header-actions {
+  gap: 8px;
+}
+.prompt-shelf--harness .prompt-shelf__header-button {
+  min-height: 32px;
+  border-radius: 999px;
+  padding: 0 10px;
+}
+.prompt-shelf--harness.prompt-shelf--decision .prompt-shelf__actions {
+  gap: 6px;
+}
+.prompt-shelf--harness.prompt-shelf--decision .prompt-action {
+  min-height: 38px;
+  height: 38px;
+  border-radius: 10px;
+  padding: 5px 10px;
+}
+.prompt-shelf--harness .prompt-shelf__footer {
+  padding-top: 10px;
+  margin-top: 4px;
+}
+.prompt-shelf--harness .decision-confirm-bar {
+  gap: 10px;
+}
+
 /* Todo shelf: header actions (collapse/close) appear on card hover/focus. */
 .prompt-shelf--todo .prompt-shelf__header-actions {
   opacity: 0;
   transition: opacity 0.12s ease;
+}
+.prompt-shelf--todo .prompt-shelf__card--collapsed {
+  height: 48px;
+  min-height: 48px;
+  padding: 4px 10px;
+  border-radius: 14px;
+  box-sizing: border-box;
+}
+.prompt-shelf--todo .prompt-shelf__card--collapsed .prompt-shelf__header {
+  gap: 10px;
+  padding: 4px 2px;
+}
+.prompt-shelf--todo .prompt-shelf__card--collapsed .prompt-shelf__heading,
+.prompt-shelf--todo .prompt-shelf__card--collapsed .prompt-shelf__meta {
+  font-size: 12px;
+}
+.prompt-shelf--todo .prompt-shelf__card--collapsed .prompt-shelf__header-button {
+  min-height: 26px;
+  padding: 0 8px;
 }
 
 .prompt-shelf--todo:hover .prompt-shelf__header-actions,
@@ -10099,6 +10136,62 @@ body > .mermaid-diagram--fullscreen {
   padding: 4px 12px;
   border-radius: 999px;
 }
+.prompt-shelf--ask .prompt-shelf__card {
+  border-radius: 20px;
+  padding: 0 12px 10px;
+  background: var(--bg-elev);
+  border-color: color-mix(in srgb, var(--accent) 48%, var(--border-soft));
+}
+.prompt-shelf--ask .prompt-shelf__card--collapsed .prompt-shelf__content > :not(.prompt-shelf__header),
+.prompt-shelf--ask .prompt-shelf__card--collapsed > .prompt-shelf__footer {
+  display: none !important;
+}
+.prompt-shelf--ask .prompt-shelf__content { gap: 0; padding: 0 2px; }
+.prompt-shelf--ask .prompt-shelf__header { align-items: center; padding: 18px 4px 14px; gap: 16px; }
+.prompt-shelf--ask .prompt-shelf__heading { font-size: 16px; font-weight: 650; }
+.prompt-shelf--ask .prompt-shelf__header-actions { gap: 8px; }
+.prompt-shelf--ask .prompt-shelf__header-button {
+  width: 32px; height: 32px; min-height: 32px; padding: 0; border: 0; background: var(--bg-soft);
+}
+.prompt-shelf--ask .prompt-shelf__meta { font-size: 15px; }
+.prompt-shelf--ask .prompt-shelf__actions { gap: 6px; padding: 0 0 8px; }
+.prompt-shelf--ask .prompt-action { min-height: 46px; border-radius: 12px; padding: 9px 14px; background: var(--bg-soft); }
+.prompt-shelf--ask .prompt-action:hover,
+.prompt-shelf--ask .prompt-action--active,
+.prompt-shelf--ask .prompt-action--selected { background: color-mix(in srgb, var(--accent) 15%, var(--bg-soft)); }
+.prompt-shelf--ask .prompt-action__key { min-width: 28px; height: 28px; border-radius: 8px; font-size: 14px; }
+.prompt-shelf--ask .ask-shelf__custom-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  height: 38px;
+  min-height: 38px;
+  flex: 0 0 38px;
+  margin-top: 2px;
+  padding: 5px 14px;
+  border: 1px solid var(--border-soft);
+  border-radius: 12px;
+  background: var(--bg-soft);
+  overflow: hidden;
+  box-sizing: border-box;
+}
+.prompt-shelf--ask .ask-shelf__custom-row:focus-within,
+.prompt-shelf--ask .ask-shelf__custom-row--active { border-color: var(--accent); }
+.ask-shelf__custom-indicator { display: grid; place-items: center; flex: 0 0 24px; width: 24px; height: 24px; color: var(--fg-dim); font-size: 16px; line-height: 1; }
+.prompt-shelf--ask .ask-shelf__custom { height: 24px; min-height: 24px; border: 0; padding: 0; background: transparent; font-size: 14px; line-height: 24px; }
+.ask-shelf__footer-layout { display: flex; align-items: center; justify-content: space-between; gap: 16px; }
+.ask-shelf__pager { display: flex; align-items: center; gap: 8px; color: var(--fg-dim); font-size: 15px; white-space: nowrap; }
+.ask-shelf__pager-button { display: grid; place-items: center; width: 30px; height: 30px; border: 0; border-radius: 999px; background: transparent; color: var(--fg-dim); cursor: pointer; }
+.ask-shelf__pager-button:hover:not(:disabled) { background: var(--bg-soft); color: var(--fg); }
+.ask-shelf__pager-button:disabled { color: var(--fg-faint); cursor: default; }
+.prompt-shelf--ask .prompt-shelf__footer { padding: 12px 0 0; margin-top: 0; }
+.prompt-shelf--ask .decision-confirm-bar { justify-content: flex-end; gap: 10px; }
+.prompt-shelf--ask .decision-confirm-bar__hint { display: none; }
+@media (max-width: 680px) {
+  .ask-shelf__footer-layout { align-items: stretch; flex-direction: column; }
+  .ask-shelf__pager { justify-content: center; }
+  .prompt-shelf--ask .decision-confirm-bar { justify-content: space-between; }
+}
 .prompt-shelf__footnote {
   min-width: 0;
 }
@@ -10151,13 +10244,24 @@ body > .mermaid-diagram--fullscreen {
   overflow-wrap: anywhere;
 }
 .prompt-shelf--ask .ask-shelf__custom-row {
-  margin-top: 4px;
-  display: grid;
-  gap: 4px;
+  margin-top: 2px;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  height: 38px;
+  min-height: 38px;
+  flex: 0 0 38px;
+  box-sizing: border-box;
+  overflow: hidden;
 }
 .prompt-shelf--ask .ask-shelf__custom {
-  height: 30px;
-  padding: 0 9px;
+  height: 24px;
+  min-height: 24px;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  font-size: 14px;
+  line-height: 24px;
 }
 .prompt-shelf--runtime-decision .prompt-shelf__note {
   overflow: hidden;
@@ -17995,26 +18099,40 @@ body > .mermaid-diagram--fullscreen {
 }
 .provider-model-draft__list {
   display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(190px, 1fr));
-  gap: 6px;
-  max-height: 220px;
+  grid-template-columns: minmax(0, 1fr);
+  gap: 0;
+  max-height: 320px;
   overflow: auto;
-  padding: 0 2px 6px 0;
+  padding: 0;
+  border: 1px solid var(--border-soft);
+  border-radius: 8px;
+  background: var(--bg);
   grid-auto-rows: min-content;
+  container: provider-model-list / inline-size;
 }
 .provider-model-draft__option {
   min-width: 0;
-  display: flex;
-  flex-direction: column;
-  gap: 4px;
-  padding: 5px 7px;
-  border: 1px solid var(--border-soft);
-  border-radius: 7px;
-  background: color-mix(in srgb, var(--bg) 70%, transparent);
+  display: grid;
+  grid-template-columns: minmax(160px, 0.75fr) minmax(280px, 1.25fr);
+  align-items: start;
+  gap: 16px;
+  padding: 12px 14px;
+  border: none;
+  background: transparent;
   color: var(--fg);
   font-family: var(--mono);
   font-size: var(--text-2xs);
   overflow: hidden;
+  transition: background-color 120ms ease;
+}
+.provider-model-draft__option + .provider-model-draft__option {
+  border-top: 1px solid var(--border-soft);
+}
+.provider-model-draft__option:hover {
+  background: var(--bg-soft);
+}
+.provider-model-draft__option--with-context {
+  grid-template-columns: minmax(145px, 0.7fr) minmax(270px, 1.3fr) minmax(150px, 0.75fr);
 }
 .provider-model-draft__model,
 .provider-model-draft__vision {
@@ -18023,6 +18141,17 @@ body > .mermaid-diagram--fullscreen {
   grid-template-columns: auto minmax(0, 1fr);
   align-items: center;
   gap: 7px;
+}
+.provider-model-draft__model {
+  min-height: 32px;
+  padding: 1px 0;
+  color: var(--fg);
+  font-size: var(--font-control-small);
+  font-weight: 600;
+  line-height: 1.35;
+}
+.provider-model-draft__model input {
+  accent-color: var(--accent);
 }
 .provider-model-draft__context {
   min-width: 0;
@@ -18066,6 +18195,82 @@ body > .mermaid-diagram--fullscreen {
   font-family: var(--font-sans);
   font-size: var(--text-2xs);
 }
+.provider-image-input {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+  min-width: 0;
+  font-family: var(--font-sans);
+}
+.provider-image-input__head {
+  display: flex;
+  align-items: center;
+  justify-content: flex-start;
+  flex-wrap: wrap;
+  gap: 10px;
+}
+.provider-image-input__label {
+  min-width: 60px;
+  color: var(--fg-dim);
+  font-size: var(--font-control-small);
+  font-weight: 650;
+  white-space: nowrap;
+}
+.provider-image-input__meta {
+  display: flex;
+  min-width: 0;
+  align-items: baseline;
+  flex-wrap: wrap;
+  gap: 4px 8px;
+}
+.provider-image-input__status {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  min-width: 0;
+  color: var(--fg-faint);
+  font-size: var(--text-2xs);
+  line-height: 1.35;
+}
+.provider-image-input__status-dot {
+  width: 5px;
+  height: 5px;
+  flex: 0 0 5px;
+  border-radius: 50%;
+  background: currentColor;
+}
+.provider-image-input__status--supported {
+  color: var(--ok);
+}
+.provider-image-input__status--unsupported,
+.provider-image-input__status--restricted {
+  color: var(--fg-dim);
+}
+.provider-image-input__modes {
+  flex: 0 0 auto;
+}
+.provider-image-input__mode {
+  position: relative;
+  display: flex;
+  min-width: 54px;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+}
+.provider-image-input__mode:focus-within {
+  outline: 2px solid color-mix(in srgb, var(--accent) 68%, transparent);
+  outline-offset: 1px;
+}
+.provider-image-input__mode--disabled {
+  cursor: not-allowed;
+  opacity: 0.42;
+}
+.provider-image-input__detail {
+  flex: 1 1 180px;
+  color: var(--fg-faint);
+  font-size: var(--text-2xs);
+  line-height: 1.45;
+}
 .provider-model-draft__capabilities span {
   padding: 2px 6px;
   border: 1px solid var(--border-soft);
@@ -18079,6 +18284,28 @@ body > .mermaid-diagram--fullscreen {
 .provider-model-draft__option span {
   min-width: 0;
   overflow-wrap: anywhere;
+}
+@container provider-model-list (max-width: 690px) {
+  .provider-model-draft__option,
+  .provider-model-draft__option--with-context {
+    grid-template-columns: minmax(130px, 0.65fr) minmax(240px, 1.35fr);
+    gap: 12px;
+  }
+  .provider-model-draft__option--with-context .provider-model-draft__context-field {
+    grid-column: 1 / -1;
+    padding-top: 8px;
+    border-top: 1px solid var(--border-soft);
+  }
+}
+@container provider-model-list (max-width: 460px) {
+  .provider-model-draft__option,
+  .provider-model-draft__option--with-context {
+    grid-template-columns: minmax(0, 1fr);
+    gap: 9px;
+  }
+  .provider-model-draft__option--with-context .provider-model-draft__context-field {
+    grid-column: auto;
+  }
 }
 .provider-model-draft__empty {
   color: var(--fg-faint);
@@ -23043,10 +23270,8 @@ body > .mermaid-diagram--fullscreen {
   transition: opacity var(--dur-base) ease;
 }
 
-/* The image viewer is an app-level fullscreen surface. Hide the custom
-/* The image viewer is an app-level fullscreen surface. Hide the custom
-   Windows caption controls while it is open so the preview owns the only
-   visible close affordance; native shortcuts such as Alt+F4 remain intact. */
+/* Full-window image previews own their close affordance. Management pages
+   reserve caption space and retain native window controls. */
 .app--windows-frameless:has(.image-viewer-backdrop) > .windows-window-controls {
   opacity: 0;
   visibility: hidden;
@@ -23939,20 +24164,13 @@ body > .mermaid-diagram--fullscreen {
   background: var(--button-bg);
 }
 
-/* ── Topic bar "More" overflow menu ──────────────────────────────── */
-.topicbar__more {
-  position: relative;
-  display: inline-flex;
-}
-
-/* Borderless icon-only entries: file opener, More menu, workspace toggle,
-/* Borderless icon-only entries: file opener, More menu, workspace toggle,
-   and the utility (search) button. Default state has no background/border —
+/* Borderless icon-only entries: file opener, session actions, workspace toggle,
+/* Borderless icon-only entries: file opener, session actions, workspace toggle,
+   and search. Default state has no background/border —
    hover/focus still highlight so the controls stay discoverable. */
 .topicbar__actions .external-opener,
 .topicbar__actions .external-opener__primary,
 .topicbar__actions .external-opener__menu-trigger,
-.topicbar__actions .topicbar__more .topicbar__action-btn,
 .topicbar__actions .topicbar__chrome-btn,
 .topicbar__actions .topicbar__action-btn--utility {
   border: none !important;
@@ -23964,8 +24182,6 @@ body > .mermaid-diagram--fullscreen {
   border-left: none !important;
 }
 
-.topicbar__actions .topicbar__more .topicbar__action-btn:hover:not(:disabled),
-.topicbar__actions .topicbar__more .topicbar__action-btn:focus-visible:not(:disabled),
 .topicbar__actions .external-opener__primary:hover:not(:disabled),
 .topicbar__actions .external-opener__primary:focus-visible:not(:disabled),
 .topicbar__actions .external-opener__menu-trigger:hover:not(:disabled),
@@ -33539,8 +33755,10 @@ body > .mermaid-diagram--fullscreen {
 
 .app--creation .sidebar-feature-zone__item:hover,
 .app--creation .sidebar-feature-zone__item:focus-visible,
+.app--creation .sidebar-feature-zone__item--active,
 :root[data-theme-style] .app--creation .sidebar-feature-zone__item:hover,
-:root[data-theme-style] .app--creation .sidebar-feature-zone__item:focus-visible {
+:root[data-theme-style] .app--creation .sidebar-feature-zone__item:focus-visible,
+:root[data-theme-style] .app--creation .sidebar-feature-zone__item--active {
   border-color: color-mix(in srgb, var(--accent) 12%, transparent);
   background: color-mix(in srgb, var(--accent) 6%, transparent);
   color: var(--fg);
@@ -35948,6 +36166,39 @@ body > .mermaid-diagram--fullscreen {
   pointer-events: none;
 }
 
+/* macOS keeps dock tabs and the fixed workspace toggle in one title row. The
+   toggle stays anchored to the window edge while this row reserves its hit
+   area; the four tabs share the remaining width instead of sliding under it. */
+.app--darwin.app--workbench .workbench-dock__tools,
+:root[data-theme-style] .app--darwin.app--workbench .workbench-dock__tools {
+  padding-right: 48px;
+}
+
+.app--darwin.app--workbench .workbench-dock__tabs,
+:root[data-theme-style] .app--darwin.app--workbench .workbench-dock__tabs {
+  flex: 1 1 auto;
+  width: 100%;
+  min-width: 0;
+  gap: 2px;
+}
+
+.app--darwin.app--workbench .workbench-dock__tab,
+:root[data-theme-style] .app--darwin.app--workbench .workbench-dock__tab {
+  flex: 1 1 0;
+  min-width: 0;
+  max-width: none;
+  padding: 0 5px;
+  gap: 4px;
+  justify-content: center;
+}
+
+.app--darwin.app--workbench .workbench-dock__tab-label,
+:root[data-theme-style] .app--darwin.app--workbench .workbench-dock__tab-label {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
 /* Workbench keeps its workspace toggle in the fixed top-right dock-toggle
 /* Workbench keeps its workspace toggle in the fixed top-right dock-toggle
    instead of an AppChrome rail; shift it left of the Windows caption strip
@@ -36040,6 +36291,8 @@ body > .mermaid-diagram--fullscreen {
     grid-column: 1 !important;
     min-width: 0;
   }
+
+
 }
 
 /* ============================================================================
@@ -38533,8 +38786,7 @@ body > .mermaid-diagram--fullscreen {
 .theme-editor__live,
 .theme-gallery__editor > .theme-editor__actions,
 .provider-access-more__menu,
-.topicbar__more-menu,
-.topicbar__more-export-menu,
+.topicbar__export-menu,
 .heartbeat-filter-menu,
 .heartbeat-project-menu,
 .heartbeat-task-menu {

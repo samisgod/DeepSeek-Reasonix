@@ -40,10 +40,6 @@ const OWNED_ELSEWHERE = new Map(Object.entries({
   "raf-batch.test.ts": "test:stream",
   "stream-delta-batch.test.ts": "test:stream",
   "use-controller-stream-progress.test.ts": "test:stream",
-  "transcript-virtuoso-index.test.ts": "test:transcript",
-  "transcript-live-turn-stability.test.tsx": "test:transcript",
-  "transcript-scroll-release.test.ts": "test:transcript",
-  "transcript-virtualization.test.tsx": "test:transcript",
   "nested-scroll-handoff.test.ts": "test:transcript",
   "creation-transcript-scrollbar.test.ts": "test:transcript",
   "markdown-table-virtual.test.tsx": "test:transcript",
@@ -81,7 +77,7 @@ for (const [name, owner] of OWNED_ELSEWHERE) {
 
 // Suites that statically import CSS (e.g. HeartbeatPanel's heartbeat.css) need
 // the css-stub loader hook so tsx resolves the import under node.
-const CSS_STUB_SUITES = new Set(["heartbeat-editor.test.tsx", "heartbeat-next-run.test.ts"]);
+const CSS_STUB_SUITES = new Set(["settings-provider-normalization.test.ts", "provider-image-input.test.tsx", "heartbeat-editor.test.tsx", "heartbeat-next-run.test.ts", "settings-page-navigation.test.tsx", "automation-management.test.tsx", "trash-management.test.tsx", "capabilities-panel-actions.test.ts", "provider-access-card.test.tsx", "provider-editor-model-picker.test.tsx", "provider-name-readonly.test.tsx", "settings-refresh-snapshot.test.tsx", "shell-support-install.test.tsx", "shortcuts-recorder-focus.test.tsx"]);
 
 const suites = files.filter((name) => !OWNED_ELSEWHERE.has(name));
 console.log(`run-tests: ${suites.length} discovered suites (${OWNED_ELSEWHERE.size} owned by dedicated scripts)`);

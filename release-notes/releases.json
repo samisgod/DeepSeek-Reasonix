@@ -2,6 +2,1223 @@
   "schemaVersion": 1,
   "releases": [
     {
+      "version": "1.38.1",
+      "date": "2026-09-06",
+      "channel": "stable",
+      "targetingVersion": 1,
+      "title": {
+        "en": "Desktop stability and recovery fixes",
+        "zh": "桌面稳定性与恢复修复"
+      },
+      "summary": {
+        "en": "This release restores prompt answers and recovery flows, fences stale desktop session state, unifies Ask and decision popups, and fixes DeepSeek weekend pricing.",
+        "zh": "此版本恢复了提问提交与恢复流程，隔离了过期的桌面会话状态，统一了 Ask 与决策弹窗，并修复了 DeepSeek 周末计费。"
+      },
+      "surfaces": [
+        "desktop",
+        "cli"
+      ],
+      "guides": [
+        {
+          "title": {
+            "en": "Desktop prompt identity",
+            "zh": "桌面提示身份"
+          },
+          "body": {
+            "en": "How desktop prompt cards are identified and fenced across turns, runtimes, and reconnects.",
+            "zh": "桌面提示卡片如何跨轮次、运行时和重连进行标识与隔离。"
+          },
+          "href": "https://github.com/esengine/DeepSeek-Reasonix/blob/a4ae5ff6b98a37aaf9c212454cd0cc3ed5008559/docs/DESKTOP_PROMPT_IDENTITY.md"
+        },
+        {
+          "title": {
+            "en": "Session recovery and parallelism",
+            "zh": "会话恢复与并行"
+          },
+          "body": {
+            "en": "Unified session recovery and parallel-work lifecycle contracts for the Go rewrite.",
+            "zh": "Go 重写中统一的会话恢复与并行工作生命周期契约。"
+          },
+          "href": "https://github.com/esengine/DeepSeek-Reasonix/blob/a4ae5ff6b98a37aaf9c212454cd0cc3ed5008559/docs/SESSION_RECOVERY_AND_PARALLELISM.md"
+        },
+        {
+          "title": {
+            "en": "Tool contract",
+            "zh": "工具契约"
+          },
+          "body": {
+            "en": "Bilingual guidance for tool argument validation, capability recovery, soft convergence, compatibility, and cache impact.",
+            "zh": "关于工具参数验证、能力恢复、软收敛、兼容性和缓存影响的双语指南。"
+          },
+          "href": "https://github.com/esengine/DeepSeek-Reasonix/blob/a4ae5ff6b98a37aaf9c212454cd0cc3ed5008559/docs/TOOL_CONTRACT.md"
+        }
+      ],
+      "highlights": [
+        {
+          "kind": "fixed",
+          "targets": [
+            "desktop"
+          ],
+          "title": {
+            "en": "Restored prompt answers and recovery",
+            "zh": "恢复提问提交与状态恢复"
+          },
+          "body": {
+            "en": "Exact Ask answers no longer fail as not pending, and unwritable event ledgers no longer deadlock cancellation or prompt resolution. Keyboard-entered custom answers are preserved, Ask drafts are isolated by tab/runtime/turn/prompt identity, and background recovery errors are contained.",
+            "zh": "精确的 Ask 回答不再因未挂起而失败，不可写的事件账本不再导致取消或提示解析死锁。键盘输入的自定义答案得以保留，Ask 草稿按标签页/运行时/轮次/提示身份隔离，后台恢复错误得到遏制。"
+          },
+          "refs": [
+            9862
+          ]
+        },
+        {
+          "kind": "fixed",
+          "targets": [
+            "desktop"
+          ],
+          "title": {
+            "en": "Fenced stale prompt cards",
+            "zh": "隔离过期提示卡片"
+          },
+          "body": {
+            "en": "Delayed Ask or decision-card responses can no longer outlive the turn or controller that created them. Each prompt is bound to a promptId, turnId, runtimeEpoch, and kind, and stale responses expire only the matching identity.",
+            "zh": "延迟的 Ask 或决策卡片响应不再能超过创建它们的轮次或控制器。每个提示都绑定到 promptId、turnId、runtimeEpoch 和 kind，过期响应仅使匹配的身份失效。"
+          },
+          "refs": [
+            9852
+          ]
+        },
+        {
+          "kind": "fixed",
+          "targets": [
+            "desktop"
+          ],
+          "title": {
+            "en": "Fixed stale desktop session state",
+            "zh": "修复桌面会话状态竞态"
+          },
+          "body": {
+            "en": "Sessions no longer appear empty or unable to execute while their transcript or runtime is still present. Late events from a previous session binding are rejected using runtimeEpoch and sessionGeneration fences.",
+            "zh": "会话不再在转录或运行时仍存在时显示为空或无法执行。来自先前会话绑定的延迟事件通过 runtimeEpoch 和 sessionGeneration 隔离被拒绝。"
+          },
+          "refs": [
+            9842
+          ]
+        },
+        {
+          "kind": "improved",
+          "targets": [
+            "desktop"
+          ],
+          "title": {
+            "en": "Unified Ask and decision popups",
+            "zh": "统一 Ask 与决策弹窗"
+          },
+          "body": {
+            "en": "The desktop Ask surface now matches DeepSeek Harness with compact header controls, per-question pager, inline custom answers, draft restoration, and a shared visual shell for approvals, MCP interactions, runtime decisions, and extension forms.",
+            "zh": "桌面 Ask 界面现在与 DeepSeek Harness 一致，具有紧凑的标题控件、逐题分页器、内联自定义答案、草稿恢复，以及用于审批、MCP 交互、运行时决策和扩展表单的共享视觉外壳。"
+          },
+          "refs": [
+            9844
+          ]
+        },
+        {
+          "kind": "fixed",
+          "targets": [
+            "desktop"
+          ],
+          "title": {
+            "en": "Fixed Ask custom draft loss",
+            "zh": "修复 Ask 自定义回答草稿丢失"
+          },
+          "body": {
+            "en": "Selecting a suggested option no longer clears a custom answer draft. The draft is preserved per question and restored when reopening custom input.",
+            "zh": "选择建议选项不再清除自定义答案草稿。草稿按问题保留，并在重新打开自定义输入时恢复。"
+          },
+          "refs": [
+            9840
+          ]
+        },
+        {
+          "kind": "fixed",
+          "targets": [
+            "desktop"
+          ],
+          "title": {
+            "en": "Fixed topicbar opener key collision",
+            "zh": "修复主题栏打开器 key 冲突"
+          },
+          "body": {
+            "en": "Switching projects no longer leaves duplicate external-opener controls in the topic bar. Component keys are namespaced independently to prevent stale instances.",
+            "zh": "切换项目不再在主题栏中留下重复的外部打开器控件。组件键独立命名空间化，以防止陈旧实例。"
+          },
+          "refs": [
+            9836
+          ]
+        },
+        {
+          "kind": "fixed",
+          "targets": [
+            "desktop",
+            "cli"
+          ],
+          "title": {
+            "en": "Fixed DeepSeek weekend peak pricing",
+            "zh": "修复 DeepSeek 周末峰值计费"
+          },
+          "body": {
+            "en": "DeepSeek peak pricing is no longer applied on Saturdays and Sundays. The pricing schedule now correctly applies only Monday through Friday.",
+            "zh": "DeepSeek 峰值计费不再在周六和周日应用。计费表现在正确地仅适用于周一至周五。"
+          },
+          "refs": [
+            9846
+          ]
+        },
+        {
+          "kind": "improved",
+          "targets": [
+            "desktop",
+            "cli"
+          ],
+          "title": {
+            "en": "Recoverable tool argument failures",
+            "zh": "可恢复的工具参数错误"
+          },
+          "body": {
+            "en": "Malformed tool arguments are now reported as actionable unexecuted errors instead of escalating into a blocked permission-style state. A redundant top-level arguments wrapper is detected conservatively, and repairable use_capability envelope errors are diagnosed without masking authorization failures.",
+            "zh": "格式错误的工具参数现在报告为可操作的未执行错误，而不是升级为阻塞的权限样式状态。保守地检测冗余的顶层 arguments 包装器，并在不掩盖授权失败的情况下诊断可修复的 use_capability 信封错误。"
+          },
+          "refs": [
+            9863
+          ]
+        },
+        {
+          "kind": "improved",
+          "targets": [
+            "desktop"
+          ],
+          "title": {
+            "en": "Unified mixed parallel recovery contracts",
+            "zh": "统一并行与会话恢复契约"
+          },
+          "body": {
+            "en": "Recovery copies now have explicit version identity and state. Recovery failures are persisted as pending with localized retry guidance, and worktree lifecycle payloads identify source revision and owning task/conversation.",
+            "zh": "恢复副本现在具有明确的版本身份和状态。恢复失败以挂起状态持久化，并提供本地化的重试指导，工作树生命周期负载标识源修订和所属任务/会话。"
+          },
+          "refs": [
+            9848
+          ]
+        }
+      ],
+      "changes": {
+        "new": [],
+        "improved": [
+          {
+            "targets": [
+              "desktop"
+            ],
+            "title": {
+              "en": "Unified Ask and decision popups",
+              "zh": "统一 Ask 与决策弹窗"
+            },
+            "body": {
+              "en": "The desktop Ask surface now matches DeepSeek Harness with compact header controls, per-question pager, inline custom answers, draft restoration, and a shared visual shell for approvals, MCP interactions, runtime decisions, and extension forms.",
+              "zh": "桌面 Ask 界面现在与 DeepSeek Harness 一致，具有紧凑的标题控件、逐题分页器、内联自定义答案、草稿恢复，以及用于审批、MCP 交互、运行时决策和扩展表单的共享视觉外壳。"
+            },
+            "refs": [
+              9844
+            ]
+          },
+          {
+            "targets": [
+              "desktop",
+              "cli"
+            ],
+            "title": {
+              "en": "Recoverable tool argument failures",
+              "zh": "可恢复的工具参数错误"
+            },
+            "body": {
+              "en": "Malformed tool arguments are now reported as actionable unexecuted errors instead of escalating into a blocked permission-style state. A redundant top-level arguments wrapper is detected conservatively, and repairable use_capability envelope errors are diagnosed without masking authorization failures.",
+              "zh": "格式错误的工具参数现在报告为可操作的未执行错误，而不是升级为阻塞的权限样式状态。保守地检测冗余的顶层 arguments 包装器，并在不掩盖授权失败的情况下诊断可修复的 use_capability 信封错误。"
+            },
+            "refs": [
+              9863
+            ]
+          },
+          {
+            "targets": [
+              "desktop"
+            ],
+            "title": {
+              "en": "Unified mixed parallel recovery contracts",
+              "zh": "统一并行与会话恢复契约"
+            },
+            "body": {
+              "en": "Recovery copies now have explicit version identity and state. Recovery failures are persisted as pending with localized retry guidance, and worktree lifecycle payloads identify source revision and owning task/conversation.",
+              "zh": "恢复副本现在具有明确的版本身份和状态。恢复失败以挂起状态持久化，并提供本地化的重试指导，工作树生命周期负载标识源修订和所属任务/会话。"
+            },
+            "refs": [
+              9848
+            ]
+          }
+        ],
+        "fixed": [
+          {
+            "targets": [
+              "desktop"
+            ],
+            "title": {
+              "en": "Restored prompt answers and recovery",
+              "zh": "恢复提问提交与状态恢复"
+            },
+            "body": {
+              "en": "Exact Ask answers no longer fail as not pending, and unwritable event ledgers no longer deadlock cancellation or prompt resolution. Keyboard-entered custom answers are preserved, Ask drafts are isolated by tab/runtime/turn/prompt identity, and background recovery errors are contained.",
+              "zh": "精确的 Ask 回答不再因未挂起而失败，不可写的事件账本不再导致取消或提示解析死锁。键盘输入的自定义答案得以保留，Ask 草稿按标签页/运行时/轮次/提示身份隔离，后台恢复错误得到遏制。"
+            },
+            "refs": [
+              9862
+            ]
+          },
+          {
+            "targets": [
+              "desktop"
+            ],
+            "title": {
+              "en": "Fenced stale prompt cards",
+              "zh": "隔离过期提示卡片"
+            },
+            "body": {
+              "en": "Delayed Ask or decision-card responses can no longer outlive the turn or controller that created them. Each prompt is bound to a promptId, turnId, runtimeEpoch, and kind, and stale responses expire only the matching identity.",
+              "zh": "延迟的 Ask 或决策卡片响应不再能超过创建它们的轮次或控制器。每个提示都绑定到 promptId、turnId、runtimeEpoch 和 kind，过期响应仅使匹配的身份失效。"
+            },
+            "refs": [
+              9852
+            ]
+          },
+          {
+            "targets": [
+              "desktop"
+            ],
+            "title": {
+              "en": "Fixed stale desktop session state",
+              "zh": "修复桌面会话状态竞态"
+            },
+            "body": {
+              "en": "Sessions no longer appear empty or unable to execute while their transcript or runtime is still present. Late events from a previous session binding are rejected using runtimeEpoch and sessionGeneration fences.",
+              "zh": "会话不再在转录或运行时仍存在时显示为空或无法执行。来自先前会话绑定的延迟事件通过 runtimeEpoch 和 sessionGeneration 隔离被拒绝。"
+            },
+            "refs": [
+              9842
+            ]
+          },
+          {
+            "targets": [
+              "desktop"
+            ],
+            "title": {
+              "en": "Fixed Ask custom draft loss",
+              "zh": "修复 Ask 自定义回答草稿丢失"
+            },
+            "body": {
+              "en": "Selecting a suggested option no longer clears a custom answer draft. The draft is preserved per question and restored when reopening custom input.",
+              "zh": "选择建议选项不再清除自定义答案草稿。草稿按问题保留，并在重新打开自定义输入时恢复。"
+            },
+            "refs": [
+              9840
+            ]
+          },
+          {
+            "targets": [
+              "desktop"
+            ],
+            "title": {
+              "en": "Fixed topicbar opener key collision",
+              "zh": "修复主题栏打开器 key 冲突"
+            },
+            "body": {
+              "en": "Switching projects no longer leaves duplicate external-opener controls in the topic bar. Component keys are namespaced independently to prevent stale instances.",
+              "zh": "切换项目不再在主题栏中留下重复的外部打开器控件。组件键独立命名空间化，以防止陈旧实例。"
+            },
+            "refs": [
+              9836
+            ]
+          },
+          {
+            "targets": [
+              "desktop",
+              "cli"
+            ],
+            "title": {
+              "en": "Fixed DeepSeek weekend peak pricing",
+              "zh": "修复 DeepSeek 周末峰值计费"
+            },
+            "body": {
+              "en": "DeepSeek peak pricing is no longer applied on Saturdays and Sundays. The pricing schedule now correctly applies only Monday through Friday.",
+              "zh": "DeepSeek 峰值计费不再在周六和周日应用。计费表现在正确地仅适用于周一至周五。"
+            },
+            "refs": [
+              9846
+            ]
+          }
+        ]
+      },
+      "upgrade": [],
+      "risks": [],
+      "contributors": [
+        "SivanCola"
+      ],
+      "links": {
+        "github": "https://github.com/esengine/DeepSeek-Reasonix/releases/tag/desktop-v1.38.1",
+        "compare": "https://github.com/esengine/DeepSeek-Reasonix/compare/desktop-v1.38.0...desktop-v1.38.1",
+        "download": "https://reasonix.io/?download=desktop&channel=stable#start"
+      },
+      "releaseId": "1.38.1",
+      "baseVersion": "1.38.1",
+      "status": "reviewed",
+      "previousRelease": "1.38.0",
+      "builds": {
+        "cli": "v1.38.1",
+        "desktop": "v1.38.1",
+        "npm": "1.38.1"
+      }
+    },
+    {
+      "version": "1.38.0",
+      "date": "2026-09-05",
+      "channel": "stable",
+      "targetingVersion": 1,
+      "title": {
+        "en": "Reasonix 1.38: Independent search, resilient recovery, and a unified desktop workspace",
+        "zh": "Reasonix 1.38：独立搜索、可靠恢复与统一桌面工作区"
+      },
+      "summary": {
+        "en": "This release separates web search from the main conversation, hardens protocol recovery, and unifies desktop management pages. It also improves link menus, update relaunch stability, model image capability handling, and session actions.",
+        "zh": "此版本将网络搜索与主对话分离，增强协议恢复可靠性，并统一桌面管理页面。同时改进了链接菜单、更新重启稳定性、模型图像能力处理以及会话操作。"
+      },
+      "surfaces": [
+        "desktop",
+        "cli"
+      ],
+      "guides": [
+        {
+          "title": {
+            "en": "Management Pages",
+            "zh": "管理页面"
+          },
+          "body": {
+            "en": "Learn how to use the unified management pages for settings, trash, and automation.",
+            "zh": "了解如何使用统一的设置、回收站和自动化管理页面。"
+          },
+          "href": "https://github.com/esengine/DeepSeek-Reasonix/blob/94ded620594fa0a6d25f65cd3de94fec1e56eca6/docs/MANAGEMENT_PAGES.md"
+        },
+        {
+          "title": {
+            "en": "Model Capabilities",
+            "zh": "模型能力"
+          },
+          "body": {
+            "en": "Understand how model capabilities are discovered and overridden.",
+            "zh": "了解模型能力的发现与覆盖方式。"
+          },
+          "href": "https://github.com/esengine/DeepSeek-Reasonix/blob/94ded620594fa0a6d25f65cd3de94fec1e56eca6/docs/MODEL_CAPABILITIES.md"
+        },
+        {
+          "title": {
+            "en": "Model Settings",
+            "zh": "模型设置"
+          },
+          "body": {
+            "en": "Configure provider and model settings with the new editor.",
+            "zh": "使用新编辑器配置提供程序和模型设置。"
+          },
+          "href": "https://github.com/esengine/DeepSeek-Reasonix/blob/94ded620594fa0a6d25f65cd3de94fec1e56eca6/docs/MODEL_SETTINGS.md"
+        },
+        {
+          "title": {
+            "en": "Web Search",
+            "zh": "网络搜索"
+          },
+          "body": {
+            "en": "Details on the independent web search feature.",
+            "zh": "独立网络搜索功能的详细信息。"
+          },
+          "href": "https://github.com/esengine/DeepSeek-Reasonix/blob/94ded620594fa0a6d25f65cd3de94fec1e56eca6/docs/WEB_SEARCH.md"
+        }
+      ],
+      "highlights": [
+        {
+          "kind": "new",
+          "targets": [
+            "desktop",
+            "cli"
+          ],
+          "title": {
+            "en": "Independent web search",
+            "zh": "独立网络搜索"
+          },
+          "body": {
+            "en": "Web search now runs separately from the main conversation, with its own recovery budget and clear reporting when structured sources are missing.",
+            "zh": "网络搜索现在独立于主对话运行，拥有自己的恢复预算，并在缺少结构化来源时提供清晰报告。"
+          },
+          "refs": [
+            9826
+          ]
+        },
+        {
+          "kind": "improved",
+          "targets": [
+            "desktop",
+            "cli"
+          ],
+          "title": {
+            "en": "Resilient protocol recovery",
+            "zh": "可靠的协议恢复"
+          },
+          "body": {
+            "en": "Eligible protocol failures now offer a one-time recovery from valid history through the Desktop button, CLI /recover-context, Serve, and ACP. Recovery survives restart and respects cancellation.",
+            "zh": "可恢复的协议错误现在支持通过桌面按钮、CLI /recover-context、Serve 和 ACP 从有效历史恢复一次，重启后保留恢复状态，并遵守取消操作。"
+          },
+          "refs": [
+            9826
+          ]
+        },
+        {
+          "kind": "new",
+          "targets": [
+            "desktop"
+          ],
+          "title": {
+            "en": "Unified management pages",
+            "zh": "统一管理页面"
+          },
+          "body": {
+            "en": "Settings, Trash, and Automation now use full-window management pages with shared navigation and focus isolation, while keeping the workspace mounted.",
+            "zh": "设置、回收站和自动化现在使用全窗口管理页面，具有共享导航和焦点隔离，同时保持工作区挂载。"
+          },
+          "refs": [
+            9821
+          ]
+        },
+        {
+          "kind": "improved",
+          "targets": [
+            "desktop"
+          ],
+          "title": {
+            "en": "Accessible rich link menus",
+            "zh": "无障碍富链接菜单"
+          },
+          "body": {
+            "en": "Web, GitHub, and mail links now have context menus with open/copy actions and compact GitHub references, with full keyboard support.",
+            "zh": "网络、GitHub 和邮件链接现在具有上下文菜单，提供打开/复制操作和紧凑的 GitHub 引用，并支持完整的键盘操作。"
+          },
+          "refs": [
+            9824
+          ]
+        },
+        {
+          "kind": "fixed",
+          "targets": [
+            "desktop"
+          ],
+          "title": {
+            "en": "Stable update relaunch",
+            "zh": "稳定的更新重启"
+          },
+          "body": {
+            "en": "Versioned updates now relaunch through the permanent launcher, and the update banner refreshes hourly and on focus without interrupting active operations.",
+            "zh": "版本化更新现在通过永久启动器重启，更新横幅每小时及获得焦点时刷新，不会中断正在进行的操作。"
+          },
+          "refs": [
+            9809
+          ]
+        },
+        {
+          "kind": "fixed",
+          "targets": [
+            "desktop"
+          ],
+          "title": {
+            "en": "Model image capability overrides",
+            "zh": "模型图像能力覆盖"
+          },
+          "body": {
+            "en": "Provider models with unknown image capability can now be manually enabled or disabled, with official protocol restrictions taking precedence.",
+            "zh": "图像能力未知的提供程序模型现在可以手动启用或禁用，官方协议限制优先。"
+          },
+          "refs": [
+            9812
+          ]
+        }
+      ],
+      "changes": {
+        "new": [
+          {
+            "targets": [
+              "desktop"
+            ],
+            "title": {
+              "en": "Rich link context menus",
+              "zh": "富链接上下文菜单"
+            },
+            "body": {
+              "en": "Added context menus for web, GitHub, and mail links with open, copy, and compact reference actions.",
+              "zh": "为网络、GitHub 和邮件链接添加了上下文菜单，包含打开、复制和紧凑引用操作。"
+            },
+            "refs": [
+              9824
+            ]
+          },
+          {
+            "targets": [
+              "desktop"
+            ],
+            "title": {
+              "en": "Unified management pages",
+              "zh": "统一管理页面"
+            },
+            "body": {
+              "en": "Settings, Trash, and Automation now use full-window management pages with shared navigation and focus isolation.",
+              "zh": "设置、回收站和自动化现在使用全窗口管理页面，具有共享导航和焦点隔离。"
+            },
+            "refs": [
+              9821
+            ]
+          },
+          {
+            "targets": [
+              "desktop",
+              "cli"
+            ],
+            "title": {
+              "en": "Independent web search",
+              "zh": "独立网络搜索"
+            },
+            "body": {
+              "en": "Web search is decoupled from the main conversation with its own recovery budget and reporting.",
+              "zh": "网络搜索与主对话解耦，拥有自己的恢复预算和报告。"
+            },
+            "refs": [
+              9826
+            ]
+          }
+        ],
+        "improved": [
+          {
+            "targets": [
+              "desktop",
+              "cli"
+            ],
+            "title": {
+              "en": "Protocol recovery hardening",
+              "zh": "协议恢复加固"
+            },
+            "body": {
+              "en": "Eligible protocol failures now offer a one-time recovery from valid history through the Desktop button, CLI /recover-context, Serve, and ACP. Recovery survives restart and respects cancellation.",
+              "zh": "可恢复的协议错误现在支持通过桌面按钮、CLI /recover-context、Serve 和 ACP 从有效历史恢复一次，重启后保留恢复状态，并遵守取消操作。"
+            },
+            "refs": [
+              9826
+            ]
+          },
+          {
+            "targets": [
+              "desktop"
+            ],
+            "title": {
+              "en": "Model image capability overrides",
+              "zh": "模型图像能力覆盖"
+            },
+            "body": {
+              "en": "Added per-model Auto/On/Off image input control and improved capability discovery for relays.",
+              "zh": "添加了每个模型的自动/开/关图像输入控制，并改进了中转站的能力发现。"
+            },
+            "refs": [
+              9812
+            ]
+          },
+          {
+            "targets": [
+              "desktop"
+            ],
+            "title": {
+              "en": "Session actions restored",
+              "zh": "恢复会话操作"
+            },
+            "body": {
+              "en": "Copy, export, terminal, and summary actions are now directly available in the topic bar.",
+              "zh": "复制、导出、终端和摘要操作现在可直接在主题栏中使用。"
+            },
+            "refs": [
+              9810
+            ]
+          }
+        ],
+        "fixed": [
+          {
+            "targets": [
+              "desktop"
+            ],
+            "title": {
+              "en": "Update relaunch stability",
+              "zh": "更新重启稳定性"
+            },
+            "body": {
+              "en": "Relaunch now uses the permanent launcher, and tray identity and recovery are more reliable.",
+              "zh": "重启现在使用永久启动器，托盘身份和恢复更加可靠。"
+            },
+            "refs": [
+              9809
+            ]
+          },
+          {
+            "targets": [
+              "desktop"
+            ],
+            "title": {
+              "en": "Automation control overlap",
+              "zh": "自动化控件重叠"
+            },
+            "body": {
+              "en": "Fixed overlapping controls when opening Automation tasks, including Windows caption buttons and macOS workspace toggle.",
+              "zh": "修复了打开自动化任务时控件重叠的问题，包括 Windows 标题按钮和 macOS 工作区切换。"
+            },
+            "refs": [
+              9811
+            ]
+          },
+          {
+            "targets": [
+              "desktop"
+            ],
+            "title": {
+              "en": "macOS dock alignment",
+              "zh": "macOS 工作区对齐"
+            },
+            "body": {
+              "en": "Workspace tabs now share the title row with the toggle, preventing overlap at minimum dock width.",
+              "zh": "工作区选项卡现在与切换按钮共享标题行，防止在最小停靠宽度下重叠。"
+            },
+            "refs": [
+              9810
+            ]
+          }
+        ]
+      },
+      "upgrade": [
+        {
+          "level": "info",
+          "targets": [
+            "desktop",
+            "cli"
+          ],
+          "title": {
+            "en": "DeepSeek conversation default",
+            "zh": "DeepSeek 主对话默认协议"
+          },
+          "body": {
+            "en": "Built-in DeepSeek conversations use Chat Completions again while web search runs independently through the official search endpoint. The one-time configuration upgrade preserves model, effort, search preferences and explicit custom routes.",
+            "zh": "内置 DeepSeek 主对话恢复使用 Chat Completions，网络搜索独立使用官方搜索端点。一次性配置升级保留模型、思考等级、搜索偏好和显式自定义路由。"
+          },
+          "refs": [
+            9826
+          ]
+        }
+      ],
+      "risks": [
+        {
+          "targets": [
+            "desktop",
+            "cli"
+          ],
+          "title": {
+            "en": "Recovery and downgrade boundaries",
+            "zh": "恢复与降级边界"
+          },
+          "body": {
+            "en": "A model may request a completed read-only tool again after protocol repair. Verified file-write recovery prevents repeated satisfied writes, but this is not a guarantee for arbitrary shell or MCP effects. Older clients can read ordinary history but cannot enforce the new recovery accounting; do not use a downgrade to resume an unresolved protocol incident.",
+            "zh": "协议修复后，模型可能再次请求已经完成的只读工具。已验证的文件写入恢复可避免重复执行已满足的写入，但不能据此保证任意 shell 或 MCP 副作用不重复。旧客户端可读取普通历史，但无法执行新的恢复约束；请勿通过降级续跑尚未解决的协议故障。"
+          },
+          "refs": [
+            9826
+          ]
+        }
+      ],
+      "contributors": [
+        "SivanCola",
+        "wqshan-cn"
+      ],
+      "links": {
+        "github": "https://github.com/esengine/DeepSeek-Reasonix/releases/tag/desktop-v1.38.0",
+        "compare": "https://github.com/esengine/DeepSeek-Reasonix/compare/desktop-v1.37.0...desktop-v1.38.0",
+        "download": "https://reasonix.io/?download=desktop&channel=stable#start"
+      },
+      "releaseId": "1.38.0",
+      "baseVersion": "1.38.0",
+      "status": "reviewed",
+      "previousRelease": "1.37.0",
+      "builds": {
+        "cli": "v1.38.0",
+        "desktop": "v1.38.0",
+        "npm": "1.38.0"
+      }
+    },
+    {
+      "version": "1.37.0",
+      "date": "2026-09-04",
+      "channel": "stable",
+      "targetingVersion": 1,
+      "title": {
+        "en": "Reasonix 1.37.0",
+        "zh": "Reasonix 1.37.0"
+      },
+      "summary": {
+        "en": "This release simplifies the agent core, improves provider capability handling, stabilizes desktop scrolling, and adds ModelScope as a provider preset.",
+        "zh": "此版本简化了 Agent 核心，改进了提供商能力处理，稳定了桌面滚动，并新增 ModelScope 提供商预设。"
+      },
+      "surfaces": [
+        "desktop",
+        "cli",
+        "site",
+        "service"
+      ],
+      "guides": [
+        {
+          "title": {
+            "en": "Agent Core Simplification",
+            "zh": "Agent 核心简化"
+          },
+          "body": {
+            "en": "Learn about the simplified agent loop, explicit planner and continuation policies, and the new deterministic completion flow.",
+            "zh": "了解简化的 Agent 循环、显式的 planner 和 continuation 策略，以及新的确定性完成流程。"
+          },
+          "href": "https://github.com/esengine/DeepSeek-Reasonix/blob/a2a89ee61852d828dbc7a84d8a24f8f1ca070afd/docs/AGENT_CORE_SIMPLIFICATION.md"
+        },
+        {
+          "title": {
+            "en": "Model Capabilities",
+            "zh": "模型能力"
+          },
+          "body": {
+            "en": "Details on model-level vision capabilities and the new capability metadata contract.",
+            "zh": "关于模型级视觉能力和新能力元数据契约的详细信息。"
+          },
+          "href": "https://github.com/esengine/DeepSeek-Reasonix/blob/a2a89ee61852d828dbc7a84d8a24f8f1ca070afd/docs/MODEL_CAPABILITIES.md"
+        },
+        {
+          "title": {
+            "en": "Reasoning Providers",
+            "zh": "推理提供商"
+          },
+          "body": {
+            "en": "Updated reasoning replay and recovery behavior for OpenAI-compatible providers.",
+            "zh": "针对 OpenAI 兼容提供商的推理回放和恢复行为更新。"
+          },
+          "href": "https://github.com/esengine/DeepSeek-Reasonix/blob/a2a89ee61852d828dbc7a84d8a24f8f1ca070afd/docs/REASONING_PROVIDERS.md"
+        }
+      ],
+      "highlights": [
+        {
+          "kind": "improved",
+          "targets": [
+            "desktop",
+            "cli"
+          ],
+          "title": {
+            "en": "Simplified agent core with deterministic completion",
+            "zh": "简化 Agent 核心并采用确定性完成流程"
+          },
+          "body": {
+            "en": "The agent loop is now executor-only by default, with explicit opt-in for planner, continuation, and compaction. Completion no longer uses a second LLM validator; empty responses retry the same frozen request.",
+            "zh": "Agent 循环现在默认仅执行器，planner、continuation 和 compaction 需显式启用。完成不再使用第二个 LLM 验证器；空响应会重试相同的冻结请求。"
+          },
+          "refs": [
+            9794,
+            9788
+          ]
+        },
+        {
+          "kind": "improved",
+          "targets": [
+            "desktop"
+          ],
+          "title": {
+            "en": "Model-level vision capabilities",
+            "zh": "模型级视觉能力"
+          },
+          "body": {
+            "en": "Vision support is now determined by model-level capability metadata instead of manual VisionModels lists, with automatic parsing from provider /models responses.",
+            "zh": "视觉支持现在由模型级能力元数据决定，而非手动 VisionModels 列表，并自动从提供商 /models 响应解析。"
+          },
+          "refs": [
+            9787
+          ]
+        },
+        {
+          "kind": "new",
+          "targets": [
+            "desktop"
+          ],
+          "title": {
+            "en": "ModelScope provider preset",
+            "zh": "ModelScope 提供商预设"
+          },
+          "body": {
+            "en": "Added ModelScope as an OpenAI-compatible provider preset with 7 curated models, including Qwen3.5-397B and DeepSeek-V4.",
+            "zh": "新增 ModelScope 作为 OpenAI 兼容提供商预设，包含 7 个精选模型，如 Qwen3.5-397B 和 DeepSeek-V4。"
+          },
+          "refs": [
+            8771
+          ]
+        },
+        {
+          "kind": "fixed",
+          "targets": [
+            "desktop"
+          ],
+          "title": {
+            "en": "Stable transcript scrolling",
+            "zh": "稳定的会话滚动"
+          },
+          "body": {
+            "en": "Fixed multiple scroll jump issues, including reduced-motion compounding, block-window prepends, and late range commits.",
+            "zh": "修复了多个滚动跳动问题，包括减少动画叠加、块窗口前插和延迟范围提交。"
+          },
+          "refs": [
+            9753,
+            9760,
+            9746
+          ]
+        },
+        {
+          "kind": "fixed",
+          "targets": [
+            "desktop"
+          ],
+          "title": {
+            "en": "Management commands no longer require a turn ID",
+            "zh": "管理命令不再需要回合 ID"
+          },
+          "body": {
+            "en": "Slash commands like /compact and /context now complete without creating an agent turn, avoiding spurious errors.",
+            "zh": "/compact 和 /context 等斜杠命令现在无需创建 Agent 回合即可完成，避免虚假错误。"
+          },
+          "refs": [
+            9774
+          ]
+        }
+      ],
+      "changes": {
+        "new": [
+          {
+            "targets": [
+              "desktop"
+            ],
+            "title": {
+              "en": "ModelScope provider preset",
+              "zh": "ModelScope 提供商预设"
+            },
+            "body": {
+              "en": "Added ModelScope as an OpenAI-compatible provider preset with 7 curated models.",
+              "zh": "新增 ModelScope 作为 OpenAI 兼容提供商预设，包含 7 个精选模型。"
+            },
+            "refs": [
+              8771
+            ]
+          },
+          {
+            "targets": [
+              "desktop"
+            ],
+            "title": {
+              "en": "Model-level vision capabilities",
+              "zh": "模型级视觉能力"
+            },
+            "body": {
+              "en": "Replaced manual VisionModels with model-level capability metadata, including automatic parsing from provider /models responses.",
+              "zh": "用模型级能力元数据取代手动 VisionModels，包括自动从提供商 /models 响应解析。"
+            },
+            "refs": [
+              9787
+            ]
+          }
+        ],
+        "improved": [
+          {
+            "targets": [
+              "desktop",
+              "cli"
+            ],
+            "title": {
+              "en": "Deterministic agent completion",
+              "zh": "确定性 Agent 完成"
+            },
+            "body": {
+              "en": "Removed the completion validator second-LLM request; empty responses retry the same frozen request, and reasoning-only responses may finish without visible text.",
+              "zh": "移除了完成验证器的第二次 LLM 请求；空响应重试相同的冻结请求，仅推理的响应可能在没有可见文本的情况下完成。"
+            },
+            "refs": [
+              9788
+            ]
+          },
+          {
+            "targets": [
+              "desktop",
+              "cli"
+            ],
+            "title": {
+              "en": "Explicit planner and continuation",
+              "zh": "显式 planner 和 continuation"
+            },
+            "body": {
+              "en": "Ordinary requests are executor-only; planner and continuation are opt-in. Pressure compaction is one summary plus one retry.",
+              "zh": "普通请求仅执行器；planner 和 continuation 需显式启用。压力压缩为一次摘要加一次重试。"
+            },
+            "refs": [
+              9794
+            ]
+          },
+          {
+            "targets": [
+              "desktop",
+              "cli"
+            ],
+            "title": {
+              "en": "OpenAI reasoning replay alignment",
+              "zh": "OpenAI 推理回放对齐"
+            },
+            "body": {
+              "en": "Replay historical reasoning_content turns when tools are declared, and self-heal stale-history 400 errors.",
+              "zh": "当声明工具时回放历史 reasoning_content 回合，并自愈旧历史 400 错误。"
+            },
+            "refs": [
+              9776
+            ]
+          },
+          {
+            "targets": [
+              "desktop",
+              "cli"
+            ],
+            "title": {
+              "en": "Subagent outcome preservation",
+              "zh": "子代理结果保留"
+            },
+            "body": {
+              "en": "Preserve and recover subagent outcomes with a new SubagentOutcome envelope and typed errors.",
+              "zh": "使用新的 SubagentOutcome 封装和类型化错误保留并恢复子代理结果。"
+            },
+            "refs": [
+              9775
+            ]
+          },
+          {
+            "targets": [
+              "desktop"
+            ],
+            "title": {
+              "en": "Versioned session context",
+              "zh": "版本化会话上下文"
+            },
+            "body": {
+              "en": "Stabilized prompt prefixes by moving mutable environment and skill catalogs into deterministic session-context snapshots.",
+              "zh": "通过将可变环境和技能目录移入确定性会话上下文快照来稳定提示词前缀。"
+            },
+            "refs": [
+              9733
+            ]
+          },
+          {
+            "targets": [
+              "desktop"
+            ],
+            "title": {
+              "en": "Localized host notices",
+              "zh": "本地化主机提示"
+            },
+            "body": {
+              "en": "Moved user-visible agent host notices into the i18n catalog and synchronized language changes live.",
+              "zh": "将用户可见的 Agent 主机提示移入 i18n 目录，并实时同步语言更改。"
+            },
+            "refs": [
+              9768
+            ]
+          },
+          {
+            "targets": [
+              "desktop"
+            ],
+            "title": {
+              "en": "Retired Classic desktop style",
+              "zh": "下架经典桌面风格"
+            },
+            "body": {
+              "en": "Removed Classic layout from Settings and migrated existing classic configs to Workbench.",
+              "zh": "从设置中移除经典布局，并将现有经典配置迁移到工作台。"
+            },
+            "refs": [
+              9796
+            ]
+          }
+        ],
+        "fixed": [
+          {
+            "targets": [
+              "desktop"
+            ],
+            "title": {
+              "en": "Provider capability compatibility",
+              "zh": "提供商能力兼容性"
+            },
+            "body": {
+              "en": "Restored legacy provider-level unsupported vision signal after model-level capability metadata became authoritative.",
+              "zh": "在模型级能力元数据成为权威后，恢复了旧版提供商级不支持视觉信号。"
+            },
+            "refs": [
+              9800
+            ]
+          },
+          {
+            "targets": [
+              "desktop",
+              "cli"
+            ],
+            "title": {
+              "en": "Simplified missing-reasoning recovery",
+              "zh": "简化缺失推理恢复"
+            },
+            "body": {
+              "en": "Removed the long-lived fallback circuit; now one deterministic protocol retry before returning the provider-specific error.",
+              "zh": "移除了长期回退电路；现在在返回提供商特定错误前进行一次确定性协议重试。"
+            },
+            "refs": [
+              9767
+            ]
+          },
+          {
+            "targets": [
+              "desktop"
+            ],
+            "title": {
+              "en": "Management command classification",
+              "zh": "管理命令分类"
+            },
+            "body": {
+              "en": "Management slash commands no longer require a durable turn ID, avoiding spurious errors.",
+              "zh": "管理斜杠命令不再需要持久回合 ID，避免虚假错误。"
+            },
+            "refs": [
+              9774
+            ]
+          },
+          {
+            "targets": [
+              "desktop"
+            ],
+            "title": {
+              "en": "Scroll jump fixes",
+              "zh": "滚动跳动修复"
+            },
+            "body": {
+              "en": "Fixed reduced-motion compounding, block-window prepend absorption, and late range commit guard.",
+              "zh": "修复了减少动画叠加、块窗口前插吸收和延迟范围提交保护。"
+            },
+            "refs": [
+              9753,
+              9760,
+              9746
+            ]
+          },
+          {
+            "targets": [
+              "desktop"
+            ],
+            "title": {
+              "en": "Scrollbar generation fencing",
+              "zh": "滚动条 generation 围栏"
+            },
+            "body": {
+              "en": "Fenced scrollbar transactions by generation to prevent stale geometry from causing jumps.",
+              "zh": "按 generation 围栏滚动条事务，防止旧几何导致跳动。"
+            },
+            "refs": [
+              9759
+            ]
+          },
+          {
+            "targets": [
+              "desktop"
+            ],
+            "title": {
+              "en": "Empty fenced Markdown blocks",
+              "zh": "空代码围栏块"
+            },
+            "body": {
+              "en": "Omitted empty fenced code blocks to remove phantom cards.",
+              "zh": "省略空代码围栏块以移除幻影卡片。"
+            },
+            "refs": [
+              9757
+            ]
+          },
+          {
+            "targets": [
+              "service"
+            ],
+            "title": {
+              "en": "Crash dashboard 1101 fix",
+              "zh": "崩溃仪表板 1101 修复"
+            },
+            "body": {
+              "en": "Bounded D1 group-detail reads and capped facets to prevent Worker 1101 errors.",
+              "zh": "限制 D1 分组详情读取并限制 facet 数量，防止 Worker 1101 错误。"
+            },
+            "refs": [
+              9756
+            ]
+          },
+          {
+            "targets": [
+              "site",
+              "service"
+            ],
+            "title": {
+              "en": "Web D1 query optimization",
+              "zh": "网站 D1 查询优化"
+            },
+            "body": {
+              "en": "Added performance indexes and keyset pagination for forum and registry queries.",
+              "zh": "为论坛和注册表查询添加性能索引和 keyset 分页。"
+            },
+            "refs": [
+              9752
+            ]
+          }
+        ]
+      },
+      "upgrade": [],
+      "risks": [],
+      "contributors": [
+        "SivanCola",
+        "yrk111222"
+      ],
+      "links": {
+        "github": "https://github.com/esengine/DeepSeek-Reasonix/releases/tag/desktop-v1.37.0",
+        "compare": "https://github.com/esengine/DeepSeek-Reasonix/compare/desktop-v1.36.0...desktop-v1.37.0",
+        "download": "https://reasonix.io/?download=desktop&channel=stable#start"
+      },
+      "releaseId": "1.37.0",
+      "baseVersion": "1.37.0",
+      "status": "reviewed",
+      "previousRelease": "1.36.0",
+      "builds": {
+        "cli": "v1.37.0",
+        "desktop": "v1.37.0",
+        "npm": "1.37.0"
+      }
+    },
+    {
       "version": "1.36.0",
       "date": "2026-09-02",
       "channel": "stable",
