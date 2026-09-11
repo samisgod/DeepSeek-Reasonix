@@ -1,0 +1,83 @@
+# Reasonix 构建命令（Windows / PowerShell）
+# 上游已用 Electron 淘汰 Wails：desktop 不再有 wails build / wails.json。
+# 新链路：Go service → 主机契约 → 前端 → Electron shell → 打包。
+# Go 步骤统一用 GOPROXY 走国内代理（proxy.golang.org 直连不可达）；
+# 第 7 步打包必须设 ELECTRON_MIRROR（github.com 直连不可达）。
+# 要求 Node >= 24、pnpm 10；本机 Node 22 会打印 Unsupported engine 告警但可正常构建。
+# 第 1/7 步的 bash 入口（scripts/desktop-build.sh）只在 Git Bash 下可用。
+#
+# 只想构建 desktop 的话直接跑第 0 步的一键脚本，下面 2~8 步是它内部做的事
+# （保留作手动分步排查用）。
+
+
+# ── 0. 一键构建 desktop（推荐）────────────────────────────────────────────
+# 覆盖：依赖安装 → 主机契约 → Go service → 前端 → Electron shell → 打包 →
+#       service 归位到 app/resources/service/。产物可直接双击运行。
+# 版本号缺省由最近的 desktop-v* 标签推导（越过标签或有未提交改动时追加 -dev）；
+# 渠道默认 dev；打包目标的产物落在 desktop/build/electron/windows-amd64/app/。
+cd e:/Projects/DeepSeek-Reasonix; powershell -NoProfile -ExecutionPolicy Bypass -File scripts/build-desktop.ps1
+# 常用变体：
+#   -Version v1.38.6 -Channel stable   指定 release 版本与渠道
+#   -Run                               构建完立刻启动（独立临时 REASONIX_HOME）
+#   -NoPackage -SkipInstall            只迭代 Go/前端，不打包，最快
+#   -NoBuild                           只打包（package.mjs 内部会重建前端与 shell）
+
+
+# ── 1. CLI（cmd/reasonix，ldflags 变量名与上游一致）────────────────────────
+cd e:/Projects/DeepSeek-Reasonix; $env:GOPROXY="https://goproxy.cn,direct"; $env:CGO_ENABLED="0"; $v = git describe --tags --always 2>$null; if (-not $v) { $v = "dev" }; $c = git rev-parse --short=12 HEAD 2>$null; $t = (Get-Date).ToUniversalTime().ToString("yyyy-MM-ddTHH:mm:ssZ"); New-Item -ItemType Directory -Force -Path bin | Out-Null; go build -ldflags "-s -w -X main.version=$v -X main.gitCommit=$c -X main.buildTimeUTC=$t" -o bin/reasonix.exe ./cmd/reasonix; if ($LASTEXITCODE -eq 0) { "reasonix.exe OK" } else { "FAILED" }
+
+
+# ── 2. 依赖安装（两个 frontend/electron 包，仅首次或 lock 变更后需要）──────
+cd e:/Projects/DeepSeek-Reasonix/desktop; pnpm install --frozen-lockfile
+
+
+# ── 3. 主机契约重新生成（新增/改名任何 App 方法后必跑并提交）──────────────
+# 上游 host-RPC 注册表要求每个 App 方法都有 ownership 元数据；
+# 缺失会让 desktop 包测试失败、TestHostRPCHelloThenInvoke 挂死。
+# 该命令是幂等的：契约已最新时 git status 无输出。
+cd e:/Projects/DeepSeek-Reasonix/desktop; $env:GOPROXY="https://goproxy.cn,direct"; go run . -emit-contract frontend/src/generated; git -C e:/Projects/DeepSeek-Reasonix status --short desktop/frontend/src/generated desktop/host_command_owners.generated.json
+
+
+# ── 4. Go 桌面服务（Electron shell 会以 --host-rpc 拉起它）──────────────────
+# Windows 必须显式带 .exe 后缀：start.mjs / smoke.mjs 查找的是
+# build/bin/reasonix-desktop-service.exe，漏掉后缀会报 "binary not found"。
+cd e:/Projects/DeepSeek-Reasonix/desktop; $env:GOPROXY="https://goproxy.cn,direct"; go build -o build/bin/reasonix-desktop-service.exe .
+
+
+# ── 5. 前端 + Electron shell 构建 ─────────────────────────────────────────
+# 聚合入口：先 build:electron（前端，带 bundle 预算门禁），再构建 shell
+# （esbuild 出 main/preload/guest-preload，并内嵌 desktopContract.json）。
+# 也可分开跑：
+#   pnpm --filter reasonix-desktop-frontend build:electron
+#   pnpm --filter reasonix-desktop-shell build
+cd e:/Projects/DeepSeek-Reasonix/desktop; $env:NODE_OPTIONS="--max-old-space-size=4096"; pnpm build 2>&1 | Select-Object -Last 20
+
+
+# ── 6. 启动（本地联调）───────────────────────────────────────────────────
+# 走已构建的 frontend/dist 与 Go service；Ctrl+C 退出。
+# 开发模式（热更新，另开一个终端先跑 frontend 的 pnpm dev）：
+#   cd e:/Projects/DeepSeek-Reasonix/desktop/frontend; pnpm dev
+#   cd e:/Projects/DeepSeek-Reasonix/desktop/electron;   pnpm dev
+cd e:/Projects/DeepSeek-Reasonix/desktop/electron; pnpm start
+
+
+# ── 7. 打包（完整安装包目录，非仅 frontend/dist）──────────────────────────
+# package.mjs 会自行重跑前端 + shell 构建，再经 @electron/packager 产出
+# desktop/build/electron/windows-amd64/app/Reasonix.exe。
+# ELECTRON_MIRROR 是必需的：@electron/packager 默认从 github.com 拉 Electron
+# 发行包，此处不可达会 ConnectTimeout；npmmirror 镜像实测可用。
+cd e:/Projects/DeepSeek-Reasonix; $env:ELECTRON_MIRROR="https://registry.npmmirror.com/-/binary/electron/"; node desktop/packaging/package.mjs windows/amd64 v1.38.6
+# 官方发布入口（同一链路 + 签名 + 分平台产物，需 CI 环境）：
+#   bash scripts/desktop-build.sh windows/amd64 v1.38.6
+
+
+# ── 8. 校验（可选）────────────────────────────────────────────────────────
+cd e:/Projects/DeepSeek-Reasonix/desktop; pnpm typecheck              # 前端 + shell 两套 tsconfig
+cd e:/Projects/DeepSeek-Reasonix/desktop/electron; pnpm smoke          # 真实启动 shell + Playwright 断言
+# 注意：Windows 上 smoke 的 "Go service runs as a child of the shell" 一项必然 FAIL
+# —— smoke.mjs 的 processTree() 在 win32 直接 return []（上游既有行为）。其余 14 项应全 PASS。
+
+
+# ── 附：Go 测试（GOPROXY 同上）────────────────────────────────────────────
+# cd e:/Projects/DeepSeek-Reasonix; go test ./internal/agent/ ./internal/config/ ./internal/boot/... ./internal/control/...
+# cd e:/Projects/DeepSeek-Reasonix/desktop; go test . -timeout 900s
