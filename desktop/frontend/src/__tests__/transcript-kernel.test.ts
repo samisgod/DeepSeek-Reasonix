@@ -27,6 +27,42 @@ class FakeClock implements TranscriptKernelClock {
   }
 }
 
+{
+  const clock = new FakeClock();
+  const kernel = new TranscriptKernel({ clock });
+  const transactions: number[] = [];
+  kernel.connectWriter(request => {
+    transactions.push(request.transactionId);
+    return { accepted: true, offset: request.offset, changed: true };
+  });
+  kernel.replaceSurface("prepend");
+  const transaction = kernel.begin("prepend", { kind: "block", blockKey: "old-first", offsetPx: 7 })!;
+  for (const top of [100, 180, 238]) {
+    kernel.advanceGeometry();
+    kernel.correctAnchor(transaction, () => top);
+    kernel.correctAnchor(transaction, () => top);
+  }
+  ok(transactions.length === 3 && new Set(transactions).size === 1, "prepend batches share ownership and deduplicate each geometry revision");
+  ok(kernel.activeTransaction === transaction, "prepend remains active until the layout batch settles");
+  clock.flushFrames();
+  ok(transaction.status === "committed" && kernel.activeTransaction === null, "prepend commits after its final layout batch");
+  const replaced = kernel.begin("prepend", { kind: "block", blockKey: "old-first", offsetPx: 7 })!;
+  kernel.advanceGeometry();
+  kernel.correctAnchor(replaced, () => 300);
+  kernel.replaceSurface("next");
+  clock.flushFrames();
+  ok(replaced.status === "cancelled", "surface replacement cancels pending prepend settlement");
+  const interrupted = kernel.begin("prepend", { kind: "block", blockKey: "new-first", offsetPx: 0 })!;
+  kernel.advanceGeometry();
+  kernel.correctAnchor(interrupted, () => 300);
+  const beforeInput = transactions.length;
+  kernel.beginUserGesture({ scrollTop: 300, scrollHeight: 2000, clientHeight: 600, visibleBlocks: [{ key: "new-first", top: 300, bottom: 500 }] });
+  clock.flushFrames();
+  kernel.advanceGeometry();
+  kernel.correctAnchor(interrupted, () => 400);
+  ok(interrupted.status === "cancelled" && transactions.length === beforeInput, "user input cancels prepend settlement without another scroll write");
+}
+
 console.log("\nTranscriptKernel deterministic transactions");
 const clock = new FakeClock();
 const events: TranscriptKernelEvent[] = [];

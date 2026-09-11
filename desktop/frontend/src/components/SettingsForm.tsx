@@ -3,18 +3,20 @@ import { Tooltip } from "./Tooltip";
 
 export function SettingsSection({
   title,
+  className,
   description,
   actions,
   children,
 }: {
   title?: ReactNode;
+  className?: string;
   description?: ReactNode;
   actions?: ReactNode;
   children: ReactNode;
 }) {
   const hasHead = Boolean(title || description || actions);
   return (
-    <section className="settings-section">
+    <section className={`settings-section${className ? ` ${className}` : ""}`}>
       {hasHead && (
         <div className="settings-section__head">
           <div>

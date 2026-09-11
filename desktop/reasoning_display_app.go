@@ -14,7 +14,7 @@ func desktopStartupSettingsFromConfig(cfg *config.Config) DesktopStartupSettings
 		return DesktopStartupSettingsView{
 			Bot: botSettingsView(config.BotConfig{}), DesktopLayoutStyle: "workbench",
 			DesktopTheme: "auto", DesktopThemeStyle: "graphite", DesktopTerminalTheme: "auto",
-			DisplayMode: "standard", SessionExperience: "standard", ReasoningDisplayMode: "auto", StatusBarStyle: "text",
+			DisplayMode: "standard", SessionExperience: "standard", ReasoningDisplayMode: "auto", StatusBarStyle: "icon",
 			StatusBarItems: config.DefaultDesktopStatusBarItems(), CheckUpdates: true,
 			UpdateChannel: "stable", ConversationWidth: "standard",
 		}
@@ -34,7 +34,8 @@ func desktopStartupSettingsFromConfig(cfg *config.Config) DesktopStartupSettings
 func (a *App) defaultSettingsView() SettingsView {
 	defaults := config.Default()
 	return SettingsView{
-		Providers: []ProviderView{}, OfficialProviders: officialProviderViews(map[string]bool{}, ""),
+		WebSearchModels: []string{},
+		Providers:       []ProviderView{}, OfficialProviders: officialProviderViews(map[string]bool{}, ""),
 		ProviderPresets: providerPresetViewsForRootWithResolver(nil, a.activeWorkspaceRoot(), nil),
 		ProviderKinds:   nonNil(provider.Kinds()),
 		Permissions:     PermissionsView{Mode: "ask", Allow: []string{}, Ask: []string{}, Deny: []string{}},
@@ -56,7 +57,7 @@ func (a *App) defaultSettingsView() SettingsView {
 		Bot: botSettingsView(config.BotConfig{}), AutoPlan: "off", DesktopLayoutStyle: "workbench",
 		DesktopTheme: "auto", DesktopThemeStyle: "graphite", DesktopTerminalTheme: "auto",
 		CloseBehavior: "background", DisplayMode: "standard", ReasoningDisplayMode: "auto",
-		StatusBarStyle: "text", StatusBarItems: config.DefaultDesktopStatusBarItems(), SessionExperience: "standard",
+		StatusBarStyle: "icon", StatusBarItems: config.DefaultDesktopStatusBarItems(), SessionExperience: "standard",
 		DefaultToolApprovalMode: "auto", CheckUpdates: true, UpdateChannel: "stable",
 		Telemetry: true, Metrics: true, ExpandThinking: false, ConversationWidth: "standard",
 	}

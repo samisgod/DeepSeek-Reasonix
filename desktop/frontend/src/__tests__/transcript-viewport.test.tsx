@@ -120,8 +120,9 @@ ok(forwardIndexes.length === 36 && forwardIndexes[0] === 96 && forwardIndexes.at
 const backwardIndexes = extractTranscriptWindowIndexes({ startIndex: 100, endIndex: 104, count: 1_000 }, new Set(), 36, "backward");
 ok(backwardIndexes.length === 36 && backwardIndexes[0] === 73 && backwardIndexes.at(-1) === 108,
   "backward scrolling mirrors the bounded compositor runway");
+const nativeViewportSource = await import("node:fs/promises").then((fs) => fs.readFile(new URL("../lib/useTranscriptNativeViewport.ts", import.meta.url), "utf8"));
 ok(
-  windowSource.includes("useSyncExternalStore(subscribe, getSnapshot, getSnapshot)")
+  nativeViewportSource.includes("useSyncExternalStore(subscribe, getSnapshot, getSnapshot)")
     && windowSource.includes("scrollTop: nativeViewport.scrollTop")
     && windowSource.includes("clientHeight: nativeViewport.clientHeight")
     && windowSource.includes("getBoundingClientRect().top - scrollElement.getBoundingClientRect().top + nativeViewport.scrollTop"),

@@ -134,7 +134,7 @@ console.log("\nTranscriptKernel deterministic race matrix");
 }
 
 {
-  const { kernel, writes } = setup("prepend-during-gesture");
+  const { clock, kernel, writes } = setup("prepend-during-gesture");
   const snapshot = readerSnapshot("turn:prepend-anchor");
   kernel.beginUserGesture(snapshot, "selection");
   const deferred = kernel.begin("prepend", kernel.anchor);
@@ -142,6 +142,7 @@ console.log("\nTranscriptKernel deterministic race matrix");
   const resumed = kernel.endUserGesture();
   kernel.advanceGeometry();
   kernel.correctAnchor(resumed!, () => 1_400);
+  clock.flushFrames();
   ok(resumed?.status === "committed" && writes[0]?.offset === 1_412, "gesture release resumes prepend from the pre-mutation logical anchor");
 }
 

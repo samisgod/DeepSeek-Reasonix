@@ -17,6 +17,10 @@ func TestCapabilityOverrideDirectCatalogResolution(t *testing.T) {
 	e := ProviderEntry{Name: "opencode-go", Kind: "openai", BaseURL: "https://opencode.ai/zen/go/v1", Model: "kimi-k3"}
 	auto := r.Resolve(&e)
 	e.ModelOverrides = map[string]ProviderModelOverride{"KIMI-K3": {Vision: capabilityBoolPtr(false), ContextWindow: 123456}}
+	if got := r.Resolve(&e); got.Source == CapabilitySourceOverride {
+		t.Fatal("differently cased override must not apply")
+	}
+	e.ModelOverrides["kimi-k3"] = e.ModelOverrides["KIMI-K3"]
 	got := r.Resolve(&e)
 	if got.State != CapabilityUnsupported || got.AutomaticState != CapabilitySupported || got.Source != CapabilitySourceOverride {
 		t.Fatalf("override = %+v", got)
@@ -46,7 +50,7 @@ func TestCapabilityOverrideDirectCatalogResolution(t *testing.T) {
 func TestCapabilityOfficialHardLimitAndExplicitOff(t *testing.T) {
 	r := &ModelCapabilityResolver{}
 	for _, kind := range []string{"openai", "anthropic", "responses"} {
-		e := ProviderEntry{Name: "deepseek", Kind: kind, BaseURL: "https://api.deepseek.com", Model: "deepseek-v4-flash", Vision: true, ModelOverrides: map[string]ProviderModelOverride{"deepseek-v4-flash": {Vision: capabilityBoolPtr(true)}}}
+		e := ProviderEntry{Name: "deepseek", Kind: kind, BaseURL: "https://api.deepseek.com", Model: "deepseek-v4-pro", Vision: true, ModelOverrides: map[string]ProviderModelOverride{"deepseek-v4-pro": {Vision: capabilityBoolPtr(true)}}}
 		if got := r.Resolve(&e); got.State != CapabilityUnsupported || got.ImageInputEnableAllowed || got.ImageInputBlockReason == "" {
 			t.Fatalf("%s hard limit: %+v", kind, got)
 		}

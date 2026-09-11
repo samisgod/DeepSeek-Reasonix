@@ -81,11 +81,13 @@ type Config struct {
 	// settings UI intentionally owns even when their value equals the built-in
 	// default. It is transient edit metadata and is never serialized directly.
 	explicitProjectSkillKeys map[string]bool
+	stagedModelCredentials   []string
 	editLoadErr              error
 	// loadWarnings are non-fatal issues observed while loading config (corrupt
 	// user/project files recovered via last-known-good or defaults). They never
 	// rewrite the original file; the UI may surface them for doctor repair.
-	loadWarnings []string
+	loadWarnings      []string
+	openCodeGoJournal *openCodeGoJournal
 }
 
 // KeepProjectSkillKey marks a skill field as an intentional project override.
@@ -342,12 +344,11 @@ func normalizeThemeStyle(style string) string {
 	}
 }
 
+// The retired "classic" style normalizes to workbench, like any other value
+// this build does not know, so a config written before the style was removed
+// keeps working and the Go side and the UI agree on what it means.
 func normalizeDesktopLayoutStyle(style string) string {
 	switch strings.ToLower(strings.TrimSpace(style)) {
-	case "classic":
-		return "classic"
-	case "workbench", "workspace":
-		return "workbench"
 	case "creation":
 		return "creation"
 	default:
@@ -430,7 +431,9 @@ func (c *Config) DesktopTerminalTheme() string {
 	}
 }
 
-// DesktopLayoutStyle defaults to workbench; retired classic stays readable until startup migration persists its replacement.
+// DesktopLayoutStyle defaults to workbench. The retired "classic" value is
+// normalized on read rather than migrated to disk: nothing behaves differently
+// for it, so there is no rewritten value worth persisting.
 func (c *Config) DesktopLayoutStyle() string {
 	if strings.EqualFold(strings.TrimSpace(c.Desktop.ThemeStyle), "workbench") && strings.TrimSpace(c.Desktop.LayoutStyle) == "" {
 		return "workbench"
@@ -486,15 +489,18 @@ func (c *Config) DesktopDefaultToolApprovalMode() string {
 }
 
 // DesktopStatusBarStyle normalizes the desktop status bar metric label style.
-// Default is "text"; explicit "icon" preserves the user's compact choice.
+// Unmigrated configurations adopt icon labels once; later choices are preserved.
 func (c *Config) DesktopStatusBarStyle() string {
+	if !c.Desktop.StatusBarStyleInitialized {
+		return "icon"
+	}
 	switch strings.ToLower(strings.TrimSpace(c.Desktop.StatusBarStyle)) {
 	case "icon":
 		return "icon"
 	case "text":
 		return "text"
 	default:
-		return "text"
+		return "icon"
 	}
 }
 
@@ -1260,6 +1266,7 @@ type AgentConfig struct {
 	PlannerMaxSteps int     `toml:"planner_max_steps"`
 	Temperature     float64 `toml:"temperature"`
 	PlannerModel    string  `toml:"planner_model"`
+	WebSearchModel  string  `toml:"web_search_model"` // empty or auto preserves automatic search selection
 	// VisionModel is empty (off), "auto", or a canonical provider/model ref
 	// used to summarize images before a text-only executor turn.
 	VisionModel         string  `toml:"vision_model"`
@@ -1345,6 +1352,7 @@ type AgentConfig struct {
 // token budget; the harness compacts older history as a turn's prompt approaches
 // it (see agent compaction). 0 disables compaction for the instance.
 type ProviderEntry struct {
+	DisplayName   string            `toml:"display_name,omitempty"` // UI label; Name remains the stable routing identity.
 	Name          string            `toml:"name"`
 	Kind          string            `toml:"kind"`
 	BaseURL       string            `toml:"base_url"`
@@ -1366,11 +1374,13 @@ type ProviderEntry struct {
 	ResponsesMode string `toml:"responses_mode"`
 	// ResponsesStateful is the legacy boolean form retained for config
 	// compatibility. ResponsesMode wins when both are present.
-	ResponsesStateful *bool `toml:"responses_stateful"`
-	resolvedAPIKey    string
-	resolvedSource    CredentialSource
-	BalanceURL        string `toml:"balance_url"` // optional; a provider-specific wallet-balance endpoint (DeepSeek: https://api.deepseek.com/user/balance). Empty = no balance readout.
-	ContextWindow     int    `toml:"context_window"`
+	ResponsesStateful  *bool `toml:"responses_stateful"`
+	resolvedAPIKey     string
+	credentialsFrozen  bool
+	credentialProxyURL string // runtime-only loopback transport, never persisted
+	resolvedSource     CredentialSource
+	BalanceURL         string `toml:"balance_url"` // optional; a provider-specific wallet-balance endpoint (DeepSeek: https://api.deepseek.com/user/balance). Empty = no balance readout.
+	ContextWindow      int    `toml:"context_window"`
 	// MaxOutputTokens is a protocol-neutral total output budget for one turn.
 	// Zero means official DeepSeek omits the field (server 384K ceiling) and
 	// other vendors keep their own defaults. Effort selects thinking depth only.
@@ -1610,16 +1620,6 @@ func (e *ProviderEntry) modelOverrideForModel(model string) (ProviderModelOverri
 	if ov, ok := e.ModelOverrides[model]; ok {
 		return ov, true
 	}
-	keys := make([]string, 0, len(e.ModelOverrides))
-	for k := range e.ModelOverrides {
-		keys = append(keys, k)
-	}
-	slices.Sort(keys)
-	for _, k := range keys {
-		if strings.EqualFold(strings.TrimSpace(k), model) {
-			return e.ModelOverrides[k], true
-		}
-	}
 	return ProviderModelOverride{}, false
 }
 
@@ -1840,7 +1840,7 @@ const LanguagePolicy = `Reply in the same language the user is using in their mo
 // Default returns the built-in default configuration.
 func Default() *Config {
 	return &Config{
-		ConfigVersion:    8,
+		ConfigVersion:    10,
 		DefaultModel:     "deepseek-flash",
 		CredentialsStore: CredentialsStoreAuto,
 		UI:               UIConfig{Theme: "auto", ShowTurnUsage: true},
@@ -1950,6 +1950,17 @@ func (c *Config) Provider(name string) (*ProviderEntry, bool) {
 // without duplicating base_url/api_key_env. Single-`model` entries still resolve
 // by provider name, keeping older configs working unchanged.
 func (c *Config) ResolveModel(ref string) (*ProviderEntry, bool) {
+	if entry, ok := c.resolveCurrentModel(ref); ok {
+		return entry, true
+	}
+	target, err := c.resolveOpenCodeGoAlias(ref, false)
+	if err != nil || target == ref {
+		return nil, false
+	}
+	return c.resolveCurrentModel(target)
+}
+
+func (c *Config) resolveCurrentModel(ref string) (*ProviderEntry, bool) {
 	if ref == "" {
 		return nil, false
 	}
@@ -1996,6 +2007,9 @@ func (c *Config) ResolveModel(ref string) (*ProviderEntry, bool) {
 // configured provider — so preference isn't overwritten by iteration order.
 func (c *Config) ResolveModelWithFallback(ref string) (resolvedRef string, fallback bool, ok bool) {
 	ref = strings.TrimSpace(ref)
+	if c.ModelReferenceError(ref) != nil {
+		return "", false, false
+	}
 	if ref != "" {
 		if e, found := c.ResolveModel(ref); found {
 			return e.Name + "/" + e.Model, false, true
@@ -2110,7 +2124,7 @@ func (e *ProviderEntry) APIKey() string {
 	if e == nil {
 		return ""
 	}
-	if e.resolvedAPIKey != "" {
+	if e.credentialsFrozen || e.resolvedAPIKey != "" {
 		return e.resolvedAPIKey
 	}
 	if e.APIKeyEnv == "" {

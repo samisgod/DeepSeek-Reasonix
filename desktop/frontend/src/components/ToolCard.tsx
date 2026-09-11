@@ -11,6 +11,8 @@ import { app } from "../lib/bridge";
 import type { MCPAppInstanceView, MCPAppPresentation } from "../lib/types";
 
 const MCPAppCard = lazy(() => import("./MCPAppCard").then((m) => ({ default: m.MCPAppCard })));
+const SubagentOutcomeCard = lazy(() => import("./SubagentOutcomeCard").then((m) => ({ default: m.SubagentOutcomeCard })));
+const SubagentPreview = lazy(() => import("./SubagentPreview").then((m) => ({ default: m.SubagentPreview })));
 
 function MCPAppCardLazy({
   instance,
@@ -41,8 +43,6 @@ import { useCollapseAnimation } from "../lib/useCollapseAnimation";
 import { isBatchedReadOnlyTool, isTerminalSubagentPhase, type Item, type SubagentPhase } from "../lib/useController";
 import type { Translator } from "../lib/i18n";
 import { ReadOnlyBatch } from "./ReadOnlyBatch";
-import { Markdown } from "./Markdown";
-import { ReasoningSummary } from "./ReasoningSummary";
 import { useWorkProcessPresentation } from "../lib/sessionExperience";
 import { useTranscriptUserResizeIntent } from "./TranscriptLayoutIntentContext";
 import { resolveToolCardDefaultOpen } from "../lib/transcriptRowGeometry";
@@ -67,18 +67,13 @@ function subagentPhaseLabel(t: Translator, phase: SubagentPhase): string {
   }
 }
 
-function subagentOutcomeLabel(t: Translator, status: string): string {
-  switch (status) {
-    case "completed": return t("subagent.outcome.completed");
-    case "partial": return t("subagent.outcome.partial");
-    case "failed": return t("subagent.outcome.failed");
-    case "cancelled": return t("subagent.outcome.cancelled");
-    default: return status;
-  }
-}
-
 function formatElapsedSeconds(ms: number): string {
   return String(Math.max(0, Math.round(ms / 1000)));
+}
+
+function formatRunningElapsed(ms: number): string {
+  const seconds = Number(formatElapsedSeconds(ms));
+  return seconds < 60 ? `${seconds}s` : `${Math.floor(seconds / 60)}m${seconds % 60}s`;
 }
 
 /** Lines shown by default in a shell output block before the "show all" button. */
@@ -231,17 +226,17 @@ export const ToolCard = memo(function ToolCard({ item, subcalls, tabId, displayN
       ? [item.profile.model, item.profile.effort ? `effort ${item.profile.effort}` : ""].filter(Boolean).join(" · ")
       : "";
 
-  // Sub-agent progress chip: phase + running elapsed + recent activity. The
-  // 1s ticker only runs while a progress card is live; terminal cards show
-  // the final duration instead.
+  // One 1s ticker per live card feeds both the sub-agent chip and the plain
+  // running-elapsed label; terminal cards show the final duration instead.
   const sp = item.subagentProgress;
+  const ticking = sp ? !isTerminalSubagentPhase(sp.phase) : item.status === "running" && item.startedAt !== undefined;
   const [nowTick, setNowTick] = useState(() => Date.now());
   useEffect(() => {
-    if (!sp || isTerminalSubagentPhase(sp.phase)) return;
+    if (!ticking) return;
     const id = window.setInterval(() => setNowTick(Date.now()), 1000);
     return () => window.clearInterval(id);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [sp]);
+  }, [ticking]);
+  const liveElapsed = ticking && !sp && item.startedAt !== undefined ? formatRunningElapsed(nowTick - item.startedAt) : "";
   const subagentChip = sp
     ? (() => {
         const label = subagentPhaseLabel(t, sp.phase);
@@ -356,7 +351,7 @@ export const ToolCard = memo(function ToolCard({ item, subcalls, tabId, displayN
   const shellOutput = isShellCard && displayOutput ? displayOutput : null;
   const shellPreview = shellOutput ? splitPreview(shellOutput, SHELL_PREVIEW_LINES) : null;
   const hasStderrDetails = Boolean(execution?.outputTail && execution.outputTail.trim());
-  const hasSubagentOutcome = Boolean(item.subagentStatus || item.subagentRef);
+  const hasSubagentOutcome = Boolean(item.subagentOutcome || effectiveOutput?.includes("Subagent outcome:"));
   const hasBody = Boolean(previewDiff || diffs.length || hasNested || shellPreview || (!shellPreview && hasArgsOrOutput) || item.error || hasSubagentPreview || hasSubagentOutcome || hasStderrDetails || riskLabel || verificationLabel);
   const errorText = item.error ? normalizeErrorText(item.error) : "";
   const errorSummary = errorText ? summarizeToolError(errorText, t("tool.errorReceiptMismatch")) : "";
@@ -389,7 +384,7 @@ export const ToolCard = memo(function ToolCard({ item, subcalls, tabId, displayN
   const quiet =
     item.readOnly && item.name !== "web_search" && !hasNested && item.status !== "error" && item.status !== "stopped";
 
-  const duration = item.status === "running" ? "" : (shellSummary || formatToolDuration(item.durationMs));
+  const duration = item.status === "running" ? liveElapsed : (shellSummary || formatToolDuration(item.durationMs));
   // While the model is still streaming this call's arguments (partial
   // dispatch), show the received volume as the live subject so a long
   // write_file body reads as progress instead of a silent stall.
@@ -473,65 +468,35 @@ export const ToolCard = memo(function ToolCard({ item, subcalls, tabId, displayN
         )}
 
         {open && hasSubagentPreview && sp && (
-          <div className="tool__subagent-preview">
-            {sp.reasoning && presentation.showWhileRunning && (
-              <div className="tool__subagent-preview-section">
-                <button
-                  type="button"
-                  className="tool__subagent-preview-label tool__subagent-preview-label--toggle"
-                  onClick={() => {
-                    beginUserResize();
-                    subagentReasoningUserOverridden.current = true;
-                    const next = !subagentReasoningOpen;
-                    if (next) setUserOpen(true);
-                    setSubagentReasoningOpen(next);
-                  }}
-                  aria-expanded={subagentReasoningOpen}
-                >
-                  {t("subagent.preview.reasoning")}
-                </button>
-                {subagentReasoningOpen ? (
-                  <div className="tool__subagent-preview-text tool__subagent-preview-text--markdown">
-                    <Markdown text={sp.reasoning} streaming={sp.phase === "reasoning"} />
-                  </div>
-                ) : (
-                  <ReasoningSummary
-                    text={sp.reasoning}
-                    streaming={sp.phase === "reasoning"}
-                    onOpen={() => {
-                      beginUserResize();
-                      subagentReasoningUserOverridden.current = true;
-                      setUserOpen(true);
-                      setSubagentReasoningOpen(true);
-                    }}
-                  />
-                )}
-              </div>
-            )}
-            {sp.text && (
-              <div className="tool__subagent-preview-section">
-                <div className="tool__subagent-preview-label">{t("subagent.preview.text")}</div>
-                <pre className="tool__subagent-preview-text">{sp.text}</pre>
-              </div>
-            )}
-            {sp.notice && (
-              <div className="tool__subagent-preview-section">
-                <div className="tool__subagent-preview-label">{t("subagent.preview.notice")}</div>
-                <pre className="tool__subagent-preview-text">{sp.notice}</pre>
-              </div>
-            )}
-            {sp.truncated && <div className="tool__note">{t("subagent.preview.truncated")}</div>}
-          </div>
+          <Suspense fallback={null}>
+            <SubagentPreview
+              progress={sp}
+              showReasoning={presentation.showWhileRunning}
+              reasoningOpen={subagentReasoningOpen}
+              onReasoningToggle={() => {
+                beginUserResize();
+                subagentReasoningUserOverridden.current = true;
+                const next = !subagentReasoningOpen;
+                if (next) setUserOpen(true);
+                setSubagentReasoningOpen(next);
+              }}
+              onReasoningOpen={() => {
+                beginUserResize();
+                subagentReasoningUserOverridden.current = true;
+                setUserOpen(true);
+                setSubagentReasoningOpen(true);
+              }}
+            />
+          </Suspense>
         )}
 
         {open && hasSubagentOutcome && (
-          <div className="tool__subagent-outcome">
-            <div className="tool__subagent-outcome-status">
-              {t("subagent.outcome.label")} {subagentOutcomeLabel(t, item.subagentStatus ?? "unknown")}{item.subagentRetryable ? ` · ${t("subagent.outcome.retryable")}` : ""}
-            </div>
-            {item.subagentRef && <code>{item.subagentRef}</code>}
-            {item.subagentErrorCode && <div className="tool__note">{item.subagentErrorCode}</div>}
-          </div>
+          <Suspense fallback={null}>
+            <SubagentOutcomeCard
+              text={effectiveOutput}
+              outcome={item.subagentOutcome}
+            />
+          </Suspense>
         )}
 
         {hasNested && (

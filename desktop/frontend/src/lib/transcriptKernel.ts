@@ -89,6 +89,7 @@ export type TranscriptKernelEvent = {
 };
 
 type ActiveTransaction = {
+  settleFrame?: number;
   listeners?: Set<() => void>;
   transaction: ScrollTransaction;
   anchor: LogicalAnchor;
@@ -317,6 +318,7 @@ export class TranscriptKernel {
     const active = this.active;
     if (!active || active.transaction.id !== id) return false;
     this.clock.clearTimeout(active.timeout);
+    if (active.settleFrame != null) this.clock.cancelAnimationFrame(active.settleFrame);
     active.transaction.status = status;
     this.emitEvent(active.transaction, undefined, undefined, undefined, outcome);
     this.active = null;
@@ -455,7 +457,12 @@ export class TranscriptKernel {
     this.emitEvent(active.transaction, owner, requested, result.offset, result.accepted ? "accepted" : result.reason ?? "rejected");
     if (result.accepted) {
       if (result.changed) this.writeTop = result.offset;
-      this.finish(active.transaction.id, "committed", "committed");
+      if (active.transaction.kind === "prepend") {
+        if (active.settleFrame != null) this.clock.cancelAnimationFrame(active.settleFrame);
+        active.settleFrame = this.clock.requestAnimationFrame(() => {
+          if (this.active === active) this.finish(active.transaction.id, "committed", "committed");
+        });
+      } else this.finish(active.transaction.id, "committed", "committed");
     }
     return result.accepted;
   }

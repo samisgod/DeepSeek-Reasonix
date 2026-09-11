@@ -67,15 +67,24 @@ contracts when touching anything that can move the transcript viewport.
   position and native scroll state into independently committed compositor
   transactions.
 - **Anchor-safe measurement commit**: DOM measurements enter a block-keyed
-  staging ledger before they can change TanStack's prefix sizes. While native
-  input owns reader intent, the entire painted viewport is immutable: both the pre-measurement
+  staging ledger before they can change TanStack's prefix sizes. First
+  materialization is distinct: each new native host must publish its real size
+  and complete prefix before its first paint, not wait for gesture release.
+  One generation-bound window origin can preserve common visible positions
+  while new preceding blocks are measured. Translate positions, extent, range
+  lookup and publication-frontier checks together; consume the origin
+  continuously toward the native leading edge, never reset it abruptly at zero.
+  Clear it using the committed prefix anchor in one prepaint commit after
+  input ends; ordinary growth retains the input-captured Kernel anchor. Acknowledge geometry only after materialization finishes. For
+  subsequent size changes, while native input owns reader intent, the entire painted viewport is immutable: both the pre-measurement
   prefix range and mounted DOM must place a block after the viewport before it
   becomes a publish boundary. The logical Kernel anchor may only move that
   boundary later. This prevents stale listeners, underestimated ranges, or
   lazy blocks from reflowing any content the reader can see. TanStack's
   `scrollMargin` is measured in the native scroller's coordinate space,
   including Transcript padding and any prefix. Earlier and visible sizes remain
-  staged during native ownership; only post-viewport overscan may publish.
+  staged during native ownership; only post-viewport overscan may publish later
+  changes. Newly materialized natural sizes follow the prepaint rule above.
   After ownership ends, publish staged DOM sizes under a Kernel logical-anchor
   restore transaction. Prefix layout and anchor correction must complete in
   one before-paint commit, cancelling any queued older geometry work.
@@ -83,7 +92,8 @@ contracts when touching anything that can move the transcript viewport.
   blocks to move with actual content growth; freezing every old top would
   overlap expanded content. Observe mounted absolute blocks as well as the
   projection root, since local folds do not change the root extent. Tail intent
-  does not refine invisible cold history; its exact geometry belongs to resident DOM. The measurement ledger owns sizes only.
+  does not refine subsequent invisible cold-history changes; first materialization
+  still establishes real mounted sizes. The measurement ledger owns sizes only.
   Input leases belong to the Kernel and must not be duplicated in the window
   adapter. Re-read physical viewport geometry at measurement admission; both
   painted prefix and measured DOM must place the publication boundary beyond

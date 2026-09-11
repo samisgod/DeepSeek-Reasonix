@@ -27,6 +27,7 @@ import (
 	"reasonix/internal/agent"
 	"reasonix/internal/agentpreset"
 	"reasonix/internal/billing"
+	"reasonix/internal/browser"
 	"reasonix/internal/capability"
 	"reasonix/internal/command"
 	"reasonix/internal/config"
@@ -42,6 +43,7 @@ import (
 	"reasonix/internal/guardian"
 	"reasonix/internal/history"
 	"reasonix/internal/hook"
+	"reasonix/internal/imageinput"
 	"reasonix/internal/installsource"
 	"reasonix/internal/instruction"
 	"reasonix/internal/jobs"
@@ -94,14 +96,21 @@ func agentKeepPolicy(keep []string) agent.KeepPolicy {
 // read from configuration. Model "" falls back to default_model; MaxSteps 0
 // uses automatic execution; RequireKey fails fast on a missing key.
 type Options struct {
-	Model       string
-	MaxSteps    int
-	MaxStepsKey string
-	RequireKey  bool
-	Sink        event.Sink
+	// ModelSettings supplies an immutable desktop credential-proxy resolver.
+	// The bundle contains virtual tunnel credentials only and stays in memory.
+	ModelSettings *config.ModelRuntimeSettings
+	Model         string
+	MaxSteps      int
+	MaxStepsKey   string
+	RequireKey    bool
+	Sink          event.Sink
 	// EffortOverride is a session-local reasoning effort override. Nil means use
 	// the resolved provider config; a non-nil empty string means provider default.
 	EffortOverride *string
+	// ConfigSnapshot is an optional, caller-owned immutable configuration for
+	// this assembly. Desktop passes the snapshot used to resolve the selection
+	// so a concurrent settings edit cannot change another role halfway through.
+	ConfigSnapshot *config.Config
 	// PermissionAllow adds process-local allow rules (for example CLI
 	// --allowed-tools). They override configured ask rules but never deny rules
 	// and are not persisted.
@@ -123,7 +132,10 @@ type Options struct {
 	// StatsSource labels this frontend's usage records (desktop/cli/serve).
 	// Empty disables usage recording for this controller.
 	StatsSource string
-	TaskStore   taskmonitor.WriteStore // Authoritative store, never a SQLite catalog.
+	// FileBranchesOnly keeps fork/branch/switch/rewind on separate session
+	// files instead of heads inside a schema-2 log.
+	FileBranchesOnly bool
+	TaskStore        taskmonitor.WriteStore // Authoritative store, never a SQLite catalog.
 	// OnConfigLoadWarnings accepts resilient-loader warnings. Returning true
 	// lets boot suppress the duplicate migration diagnostic.
 	OnConfigLoadWarnings func([]string) bool
@@ -169,6 +181,7 @@ type Options struct {
 	SessionRecoveryMeta func(control.SessionRecoveryRequest) agent.BranchMeta
 	OnSessionRecovered  func(control.SessionRecoveryInfo) error
 	OnSessionTransition func(control.SessionTransitionInfo) error
+	BeforeInboxDispatch func(*control.Controller) (func(), error)
 	// OnSessionTitleChanged lets a host project the canonical BranchMeta title
 	// into compatibility indexes and refresh notifications after the current
 	// conversation renames itself through set_session_title.
@@ -183,6 +196,10 @@ type Options struct {
 	// schemas stay byte-identical, so the provider-visible surface is unchanged.
 	FileOverlay    builtin.FileOverlay
 	TerminalRunner builtin.TerminalRunner
+	// BrowserExecutor attaches the host's browser; nil registers nothing. Its
+	// tools are registry-only: use_capability reaches them while the provider-
+	// visible surface never changes, so the cached prompt prefix stays identical.
+	BrowserExecutor browser.Executor
 	// ProviderResolver routes every model role through a caller-owned provider
 	// catalog. Nil preserves local behavior.
 	ProviderResolver provider.Resolver
@@ -233,11 +250,18 @@ func build(ctx context.Context, opts Options) (*BuildResult, error) {
 	redactToolOutputMigrated, redactToolOutputMigErr := config.MigrateLegacyRedactToolOutputForRoot(root)
 	memoryCompilerMigrated, memoryCompilerMigErr := config.MigrateLegacyMemoryCompilerForRoot(root)
 	multiThresholdMigrated, multiThresholdMigErr := config.MigrateLegacyMultiThresholdCompactionForRoot(root)
-	cfg, err := config.LoadForRoot(root)
+	config.MigrateLegacyMCPTiersForRoot(root)
+	cfg, err := resolveBuildConfiguration(root, opts.Model, opts.ConfigSnapshot)
 	if err != nil {
 		return nil, err
 	}
+	if err := opts.ModelSettings.Apply(cfg, root); err != nil {
+		return nil, err
+	}
 	deepSeekProtocolMigErr = deepSeekProtocolMigrationNoticeError(handleConfigLoadWarnings(opts, cfg), deepSeekProtocolMigErr)
+	if err := preflightRoleReasoning(cfg, opts, opts.ProviderResolver, false); err != nil {
+		return nil, err
+	}
 	// Arm the credential-protection layers from the user-global [secrets]
 	// section before any tool, hook, or plugin subprocess can spawn. Package
 	// globals are correct here because [secrets] is user-global (project
@@ -413,13 +437,15 @@ func build(ctx context.Context, opts Options) (*BuildResult, error) {
 	// instead of hard-failing every command on "missing env X_API_KEY" (issue
 	// #6996). The fallback only kicks in when the caller did not pass an
 	// explicit opts.Model; explicit choices still fail loudly.
+	if err := preflightRoleReasoning(cfg, opts, effectiveResolver, true); err != nil {
+		return nil, err
+	}
 	modelName := opts.Model
 	if modelName == "" {
 		if resolved, _, ok := cfg.ResolveNewSessionChatModel(); ok {
 			modelName = resolved
 		}
 	}
-	config.NormalizeLegacyMimoCustomProvidersForRefs(cfg, modelName)
 	// opts.AgentPreset/opts.TokenMode now seed the session quality floor (see
 	// the SetQualityFloor call after control.New); light folds to standard.
 	keepPolicy := agentKeepPolicy(cfg.Agent.Keep)
@@ -455,21 +481,7 @@ func build(ctx context.Context, opts Options) (*BuildResult, error) {
 	} else if migrated != nil {
 		sink.Emit(event.Event{Kind: event.Notice, Level: event.LevelInfo, Text: migrated.Notice()})
 	}
-	if deepSeekProtocolMigrated {
-		sink.Emit(event.Event{
-			Kind:   event.Notice,
-			Level:  event.LevelInfo,
-			Text:   "User configuration was upgraded.",
-			Detail: "Legacy built-in DeepSeek defaults now use Chat Completions with independent web search. Explicit custom routes remain unchanged. Protocol changes start a new provider cache prefix; later requests rebuild normal prefix-cache reuse.",
-		})
-	} else if deepSeekProtocolMigErr != nil {
-		sink.Emit(event.Event{
-			Kind:   event.Notice,
-			Level:  event.LevelWarn,
-			Text:   "DeepSeek protocol migration did not complete.",
-			Detail: deepSeekProtocolMigErr.Error(),
-		})
-	}
+	emitUserConfigUpgradeNotice(sink, cfg, deepSeekProtocolMigrated, deepSeekProtocolMigErr)
 	if stepLimitsMigrated || cfg.IgnoredLegacyAgentStepLimits() {
 		level := event.LevelInfo
 		text := "Deprecated agent step limits were removed."
@@ -719,6 +731,11 @@ func build(ctx context.Context, opts Options) (*BuildResult, error) {
 	// provider-visible surface is narrowed later via SetProviderVisibleTools.
 	addBuiltins(reg, enabledBuiltins, writeRoots, writeRootSet, bashSpec, bashTimeout, searchSpec, stderr, root, proxySpec, forbidReadRoots, readPathResolver, sessionGuard, managedConfig, opts.FileOverlay, opts.TerminalRunner, sessionTemp, fileWriteReceipt)
 	addWebSearch(reg, cfg, entry, proxySpec, sink)
+	if opts.BrowserExecutor != nil {
+		for _, t := range browser.Tools(opts.BrowserExecutor) {
+			reg.Add(t)
+		}
+	}
 	// Use the caller-supplied shared host when set, so controllers for the same
 	// workspace root reuse running MCP processes (e.g. one CodeGraph daemon
 	// instead of one per tab). Otherwise construct a private host per controller.
@@ -1056,8 +1073,47 @@ func build(ctx context.Context, opts Options) (*BuildResult, error) {
 	// capRuntime is assigned after MCP specs load; closures capture the variable
 	// so task tools created later still receive the session-shared substrate.
 	var capRuntime *agent.MCPCapabilityRuntime
+	visionProviderResolver := func(ref string) (provider.Provider, error) {
+		ve, ok := resolveOptionalEntry(effectiveResolver, cfg, strings.TrimSpace(ref))
+		if !ok || ve == nil || strings.TrimSpace(ve.Model) == "" {
+			return nil, fmt.Errorf("unknown vision model %q", ref)
+		}
+		return resolveProvider(effectiveResolver, cfg, proxySpec, provider.Selection{Ref: modelRefFromEntry(ve)})
+	}
+	visionModelSelector := func(currentRef, _ string) (string, bool) {
+		current, ok := resolveOptionalEntry(effectiveResolver, cfg, strings.TrimSpace(currentRef))
+		if !ok || current == nil {
+			return "", false
+		}
+		for i := range cfg.Providers {
+			p := &cfg.Providers[i]
+			if p.Name != current.Name || !p.Configured() {
+				continue
+			}
+			models := p.ModelList()
+			ordered := make([]string, 0, len(models))
+			if d := p.DefaultModel(); d != "" {
+				ordered = append(ordered, d)
+			}
+			for _, model := range models {
+				if model != "" && model != p.DefaultModel() {
+					ordered = append(ordered, model)
+				}
+			}
+			for _, model := range ordered {
+				candidate, found := cfg.ResolveModel(p.Name + "/" + model)
+				if found && candidate.Configured() && modelCapabilities.Resolve(candidate).State == config.CapabilitySupported {
+					return candidate.Name + "/" + candidate.Model, true
+				}
+			}
+		}
+		return "", false
+	}
+
+	imageConfig := &imageinput.Config{Model: cfg.Agent.VisionModel, Resolve: visionProviderResolver, Select: visionModelSelector}
 	newTaskTool := func() *agent.TaskTool {
 		return agent.NewTaskToolWithOptions(agent.TaskToolOptions{
+			ImageInput:          imageConfig,
 			Provider:            execProv,
 			Pricing:             entry.Price,
 			QuoteContext:        quoteCtx,
@@ -1617,6 +1673,7 @@ func build(ctx context.Context, opts Options) (*BuildResult, error) {
 
 	execSess := newObservedSession(sysPrompt)
 	executor := agent.New(execProv, reg, execSess, agent.Options{
+		ImageInput:   imageConfig,
 		MaxSteps:     maxSteps,
 		MaxStepsKey:  opts.MaxStepsKey,
 		Temperature:  cfg.Agent.Temperature,
@@ -1697,6 +1754,7 @@ func build(ctx context.Context, opts Options) (*BuildResult, error) {
 			plannerTools.Add(capRuntime.NewFrontend(plannerLedger, plannerAudit))
 		}
 		plannerOpts := agent.Options{
+			ImageInput:                   imageConfig,
 			MaxSteps:                     0,
 			Gate:                         headlessGate,
 			ModelRef:                     modelRefFromEntry(pe),
@@ -1722,53 +1780,16 @@ func build(ctx context.Context, opts Options) (*BuildResult, error) {
 		runner = agent.NewCoordinatorWithPlannerPolicy(plannerProv, plannerSess, pe.Price, plannerTools, plannerOpts, executor, cfg.Agent.Temperature, sink, control.NewPlannerPolicy())
 		label = entry.Model + " + planner " + pe.Model
 	}
-	visionProviderResolver := func(ref string) (provider.Provider, error) {
-		ve, ok := resolveOptionalEntry(effectiveResolver, cfg, strings.TrimSpace(ref))
-		if !ok || ve == nil || strings.TrimSpace(ve.Model) == "" {
-			return nil, fmt.Errorf("unknown vision model %q", ref)
-		}
-		return resolveProvider(effectiveResolver, cfg, proxySpec, provider.Selection{Ref: modelRefFromEntry(ve)})
-	}
-	visionModelSelector := func(currentRef, _ string) (string, bool) {
-		current, ok := resolveOptionalEntry(effectiveResolver, cfg, strings.TrimSpace(currentRef))
-		if !ok || current == nil {
-			return "", false
-		}
-		for i := range cfg.Providers {
-			p := &cfg.Providers[i]
-			if p.Name != current.Name || !p.Configured() {
-				continue
-			}
-			models := p.ModelList()
-			ordered := make([]string, 0, len(models))
-			if d := p.DefaultModel(); d != "" {
-				ordered = append(ordered, d)
-			}
-			for _, model := range models {
-				if model != "" && model != p.DefaultModel() {
-					ordered = append(ordered, model)
-				}
-			}
-			for _, model := range ordered {
-				candidate, found := cfg.ResolveModel(p.Name + "/" + model)
-				if found && candidate.Configured() && modelCapabilities.Resolve(candidate).State == config.CapabilitySupported {
-					return candidate.Name + "/" + candidate.Model, true
-				}
-			}
-		}
-		return "", false
-	}
 	imageEnabled := modelCapabilities.Resolve(entry).State == config.CapabilitySupported
 	if infoProvider, ok := execProv.(provider.ModelInfoProvider); ok {
 		imageEnabled = infoProvider.ModelInfo().SupportsInput(provider.ModalityImage)
 	}
 	imageSnapshot := config.ModelCapabilitySnapshot(cfg, modelCapabilities)
 	ctrlOpts := control.Options{
-		FrozenImageInput: &imageEnabled,
-		ImageCapabilityChanged: func() bool {
-			current, err := config.LoadForRootReadOnly(root)
-			return err == nil && config.ModelCapabilitySnapshot(current, config.NewModelCapabilityResolver()) != imageSnapshot
-		},
+		ModelSettingsRevision:          cfg.ModelRuntimeFingerprint(modelRef),
+		ModelSettingsCurrent:           runtimeModelSettingsReader(root, modelName, modelRef, opts.ModelSettings),
+		FrozenImageInput:               &imageEnabled,
+		ImageCapabilityChanged:         runtimeImageCapabilityReader(root, modelName, imageSnapshot, opts.ModelSettings),
 		TaskBudget:                     taskBudgetFromConfig(cfg),
 		GoalTokenBudget:                cfg.Agent.GoalTokenBudget,
 		Runner:                         runner,
@@ -1778,6 +1799,8 @@ func build(ctx context.Context, opts Options) (*BuildResult, error) {
 		SubagentGate:                   headlessGate,
 		Label:                          label,
 		ModelRef:                       modelRef,
+		ModelIdentity:                  cfg.ModelSelectionIdentity(modelRef),
+		ResolveSessionModel:            cfg.ResolveSavedModel,
 		VisionModel:                    cfg.Agent.VisionModel,
 		VisionProviderResolver:         visionProviderResolver,
 		VisionModelSelector:            visionModelSelector,
@@ -1830,6 +1853,7 @@ func build(ctx context.Context, opts Options) (*BuildResult, error) {
 		ReasoningLanguage:      config.ReasoningLanguageForEntry(entry, cfg.ReasoningLanguage()),
 		SessionContextStatic:   sessionContextStatic,
 		DisableColdResumePrune: !cfg.ColdResumePruneEnabled(),
+		FileBranchesOnly:       opts.FileBranchesOnly,
 		Shell:                  shell,
 		ApprovalTimeout:        opts.ApprovalTimeout,
 		Ablation:               opts.Ablation,
@@ -1845,6 +1869,7 @@ func build(ctx context.Context, opts Options) (*BuildResult, error) {
 		SessionRecoveryMeta: opts.SessionRecoveryMeta,
 		OnSessionRecovered:  opts.OnSessionRecovered,
 		OnSessionTransition: opts.OnSessionTransition,
+		BeforeInboxDispatch: opts.BeforeInboxDispatch,
 		// The merged catalog lets frontends enumerate sidecar providers.
 		ProviderResolver:  extensionResolver,
 		RuntimeGeneration: generation,
@@ -1852,6 +1877,9 @@ func build(ctx context.Context, opts Options) (*BuildResult, error) {
 		// Share the Manager already bound into bash/grep so tools and the
 		// Controller observe the same temporary generation across rebuilds.
 		SessionTemp: sessionTemp,
+	}
+	if opts.ModelSettings != nil {
+		ctrlOpts.ModelSettingsSourceRevision = opts.ModelSettings.Revision
 	}
 	// Guardian: when guardian_model is configured, spawn an LLM safety reviewer
 	// that can auto-allow safe Ask decisions and annotate risky ones before
@@ -2039,28 +2067,6 @@ func build(ctx context.Context, opts Options) (*BuildResult, error) {
 		ImplicitSkillInvocation: implicitSkillInvocation,
 	}
 	return finalizeBuildResult(&BuildResult{Controller: ctrl, Snapshot: snap, Runtime: runtimeSet, Owner: owner, Extensions: extensionMgr, Dispatcher: extensionDispatcher, ExtensionUI: extUIHub, ProviderResolver: providerResolver, BaseProviderResolver: baseResolver, Assembly: assembly}, !opts.deferPublish), nil
-}
-
-// applyUnifiedProviderToolSurface restricts Schemas/ContractEntries to the
-// shared core + host-control tools. use_capability can still Get every
-// registered tool, including those hidden from the provider schema.
-func applyUnifiedProviderToolSurface(reg *tool.Registry) {
-	if reg == nil {
-		return
-	}
-	allow := make([]string, 0, 16)
-	for _, name := range UnifiedProviderToolNames() {
-		if _, ok := reg.Get(name); ok {
-			allow = append(allow, name)
-		}
-	}
-	// Always keep use_capability if somehow only that remains.
-	if len(allow) == 0 {
-		if _, ok := reg.Get("use_capability"); ok {
-			allow = []string{"use_capability"}
-		}
-	}
-	reg.SetProviderVisibleTools(allow)
 }
 
 // effectivePlannerModel centralizes planner precedence. Every role setting
@@ -2483,68 +2489,6 @@ func subagentEffectiveIdentity(cfg *config.Config, resolver provider.Resolver, b
 	return modelID, strings.TrimSpace(config.EffectiveEffort(&entry))
 }
 
-// NewProvider builds a provider.Provider from a configured entry. Exported so
-// custom assemblers (e.g. the ACP per-session factory) can reuse it without
-// going through the full Build.
-func NewProvider(e *config.ProviderEntry) (provider.Provider, error) {
-	return NewProviderWithProxy(e, netclient.ProxySpec{Mode: netclient.ModeAuto})
-}
-
-// NewProviderWithProxy builds a provider.Provider with the configured ordinary
-// network proxy settings.
-func NewProviderWithProxy(e *config.ProviderEntry, proxy netclient.ProxySpec) (provider.Provider, error) {
-	return NewProviderWithProxyAndModelInfo(e, proxy, nil)
-}
-
-// NewProviderWithProxyAndModelInfo builds a provider while preserving the
-// adapter-resolved metadata for the exact model instance.
-func NewProviderWithProxyAndModelInfo(e *config.ProviderEntry, proxy netclient.ProxySpec, modelInfo *provider.ModelInfo) (provider.Provider, error) {
-	return newProviderWithSearchMode(e, proxy, modelInfo, true)
-}
-
-// clientSearch suppresses new native searches while retaining the adapter's
-// ability to read and replay existing native search history.
-func newProviderWithSearchMode(e *config.ProviderEntry, proxy netclient.ProxySpec, modelInfo *provider.ModelInfo, clientSearch bool) (provider.Provider, error) {
-	if modelInfo == nil {
-		resolved := config.NewModelCapabilityResolver().Resolve(e)
-		modelInfo = &resolved.ModelInfo
-	}
-	return provider.New(e.Kind, provider.Config{
-		Name:      e.Name,
-		BaseURL:   e.BaseURL,
-		Model:     e.Model,
-		APIKey:    e.APIKey(),
-		ModelInfo: modelInfo,
-		// Pass the key's env var so auth failures can name where to fix it, plus
-		// provider-kind-specific knobs. EffectiveEffort applies a configured
-		// default_effort when the user has not explicitly selected /effort.
-		Extra: map[string]any{
-			"api_key_env":        e.APIKeyEnv,
-			"api_key_source":     e.APIKeySourceLabel(),
-			"thinking":           e.Thinking,
-			"effort":             config.EffectiveEffort(e),
-			"supported_efforts":  e.SupportedEfforts,
-			"reasoning_protocol": config.ReasoningProtocolForEntry(e),
-			"max_output_tokens":  e.MaxOutputTokens,
-			"chat_url":           e.ChatURL,
-			"request_url":        e.RequestURL,
-			"headers":            e.Headers,
-			"extra_body":         e.ExtraBody,
-			"auth_header":        e.AuthHeader,
-			"proxy_spec":         proxy,
-			"vision":             config.EffectiveVision(e),
-			"vision_detail":      e.VisionDetail,
-			"web_search":         config.EffectiveWebSearch(e),
-			"client_web_search":  clientSearch,
-			"reject_redirects":   !clientSearch,
-			"mode":               e.ResponsesMode,
-			// Keep nil as nil so the responses provider can vendor-detect its
-			// default instead of accidentally treating every endpoint as stateful.
-			"stateful": e.ResponsesStateful,
-		},
-	})
-}
-
 // addBuiltins adds enabled built-in tools to reg. An empty list means all of
 // them. writeRoots confines the file-writing built-ins to the workspace: after
 // the (unconfined) defaults are added, each enabled writer is replaced by an
@@ -2705,10 +2649,8 @@ func skillMCPBindings(sk skill.Skill, reg *tool.Registry, specs []plugin.Spec, c
 		out = make([]tool.MCPBinding, 0, len(bindings))
 		for _, binding := range bindings {
 			liveServers[binding.Server] = true
-			if binding.Package == sk.Plugin {
-				out = append(out, binding)
-			}
 		}
+		out = append(out, skill.ToolBindingsForSkill(sk, bindings)...)
 	}
 	// A valid cached schema also supplies stable bindings for an on-demand
 	// package server before it is connected. The skill can then route through

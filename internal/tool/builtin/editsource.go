@@ -26,7 +26,21 @@ type editSource struct {
 // decoded disk content. A non-UTF-8 file always stays on the disk route — the
 // overlay contract is text-only, so routing GBK or UTF-16 through it would
 // rewrite the file as UTF-8.
-func readEditSource(ctx context.Context, overlay FileOverlay, path string) (editSource, error) {
+func readEditSource(ctx context.Context, overlay FileOverlay, path string) (source editSource, readErr error) {
+	defer func() {
+		if readErr != nil {
+			if expected, ok := tool.ExpectedWriteSource(ctx); ok && expected.Path == path && !expected.Absent && os.IsNotExist(readErr) {
+				readErr = &tool.OperationError{Diagnostic: tool.OperationDiagnostic{Code: tool.WriteEvidenceStale, Path: path, ExpectedSnapshot: expected.Snapshot, Recovery: "the expected source disappeared; re-read before retrying"}, Cause: ErrFileChanged}
+				return
+			}
+			return
+		}
+		if expected, ok := tool.ExpectedWriteSource(ctx); ok && expected.Path == path {
+			if expected.Absent || (expected.SourceTextDigest != "" && expected.SourceTextDigest != digestText(source.content)) || (expected.Snapshot != "" && expected.Snapshot != source.readSnapshot(path)) {
+				readErr = &tool.OperationError{Diagnostic: tool.OperationDiagnostic{Code: tool.WriteEvidenceStale, Path: path, ExpectedSnapshot: expected.Snapshot, ActualSnapshot: source.readSnapshot(path), RequiredRanges: expected.Ranges, Recovery: "re-read the file, then retry this operation"}, Cause: fmt.Errorf("%w: source differs from the read-evidence preflight", ErrFileChanged)}
+			}
+		}
+	}()
 	id, err := diskIdentity(path)
 	if err != nil {
 		return editSource{}, err
@@ -37,7 +51,7 @@ func readEditSource(ctx context.Context, overlay FileOverlay, path string) (edit
 				return editSource{content: buffered, enc: fileenc.UTF8, overlay: true, id: overlayIdentity(buffered)}, nil
 			}
 		}
-		return editSource{enc: fileenc.UTF8, id: id}, os.ErrNotExist
+		return editSource{enc: fileenc.UTF8, id: id}, &os.PathError{Op: "read", Path: path, Err: os.ErrNotExist}
 	}
 	content, enc, err := readFileEncoded(path)
 	if err != nil {
@@ -49,6 +63,14 @@ func readEditSource(ctx context.Context, overlay FileOverlay, path string) (edit
 		}
 	}
 	return editSource{content: content, enc: enc, id: id}, nil
+}
+
+func (s editSource) readSnapshot(path string) string {
+	kind, prefix := tool.ReadSourceDisk, "raw-sha256:"
+	if s.overlay {
+		kind, prefix = tool.ReadSourceOverlay, "overlay:"
+	}
+	return tool.SourceSnapshot(kind, path, fmt.Sprintf("%s%x", prefix, s.id.sum))
 }
 
 // write persists content on the same route the source was read from. An overlay

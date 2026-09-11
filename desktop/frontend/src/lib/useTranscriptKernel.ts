@@ -4,6 +4,7 @@ import {
   TranscriptKernel,
   type TranscriptKernelClock,
   type ScrollTransactionKind,
+  type LogicalAnchor,
   type TranscriptScrollMode,
   type TranscriptScrollOwner,
   type TranscriptViewportSnapshot,
@@ -149,9 +150,10 @@ export function useTranscriptKernel({
     settleGeometry(beforePaint);
   }, [settleGeometry]);
 
-  const beginAnchorRestore = useCallback(() => {
-    if (kernel.userGestureActive || kernel.intent !== "reader" || kernel.anchor.kind !== "block") return null;
-    const transaction = kernel.activeTransaction ?? kernel.begin("restore", kernel.anchor);
+  const beginAnchorRestore = useCallback((anchor?: LogicalAnchor) => {
+    const restoreAnchor = anchor ?? kernel.anchor;
+    if (kernel.userGestureActive || kernel.intent !== "reader" || restoreAnchor.kind !== "block") return null;
+    const transaction = kernel.activeTransaction ?? kernel.begin("restore", restoreAnchor);
     if (transaction) refresh();
     return transaction;
   }, [kernel, refresh]);
@@ -215,7 +217,7 @@ export function useTranscriptKernel({
     observedTopRef.current = current.scrollTop;
     const nativeOwned = kernel.observeNativeScroll(current);
     if (!nativeOwned) return null;
-    // Wheel delivery and native scrolling are not synchronous on every Wails
+    // Wheel delivery and native scrolling are not synchronous on every
     // engine. Renew the same lease until the final native scroll event so the
     // browser's final position remains authoritative.
     if (kernel.nativeGestureLeaseActive) renewGestureLease();

@@ -191,6 +191,28 @@ export async function createTranscriptHarness(options: TranscriptHarnessOptions 
       return 0;
     },
   });
+  // Native layout clamps scrollTop when the extent shrinks. jsdom stores an
+  // unconstrained number instead; without this, first measurements can leave
+  // a fictitious viewport thousands of pixels beyond the entire document.
+  const nativeScrollTop = Object.getOwnPropertyDescriptor(dom.window.Element.prototype, "scrollTop")!;
+  Object.defineProperty(proto, "scrollTop", {
+    configurable: true,
+    get(this: HTMLElement) {
+      const raw = nativeScrollTop.get!.call(this) as number;
+      if (!this.classList.contains("transcript")) return raw;
+      const maximum = this.scrollHeight - this.clientHeight;
+      if (!Number.isFinite(maximum)) return raw;
+      const top = Math.max(0, Math.min(Math.max(0, maximum), raw));
+      if (top !== raw) nativeScrollTop.set!.call(this, top);
+      return top;
+    },
+    set(this: HTMLElement, value: number) {
+      const maximum = this.scrollHeight - this.clientHeight;
+      const top = this.classList.contains("transcript") && Number.isFinite(maximum)
+        ? Math.max(0, Math.min(Math.max(0, maximum), value)) : value;
+      nativeScrollTop.set!.call(this, top);
+    },
+  });
   // Keep generic element scroll methods available to nested controls. The
   // transcript itself writes through TranscriptViewportWriter.
   (proto as unknown as { scrollTo: (arg?: number | ScrollToOptions) => void }).scrollTo = function (
@@ -226,6 +248,13 @@ export async function createTranscriptHarness(options: TranscriptHarnessOptions 
       hydrateReasoningDisplayMode: (mode: unknown, explicit: boolean) => void;
     };
     preference.hydrateReasoningDisplayMode(options.reasoningDisplayMode, true);
+  }
+  // Module I/O is not owned by the fake animation clock. Await the same
+  // presentation prerequisite as the production window before advancing
+  // deterministic frames; a tight fake-clock loop cannot finish disk imports.
+  if (options.deterministic) {
+    const markdown = await server.ssrLoadModule("/src/components/Markdown.tsx");
+    await markdown.preloadMarkdownHistory();
   }
   const { TranscriptTestSurface } = await server.ssrLoadModule("/src/__tests__/transcript-test-surface.tsx");
   const { LocaleProvider } = await server.ssrLoadModule("/src/lib/i18n.tsx");

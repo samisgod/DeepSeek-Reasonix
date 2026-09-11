@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { JSDOM } from "jsdom";
 import { baseSettings } from "../test-support/settingsTestFixtures";
+import { installDesktopHostStub } from "./desktopHostStub";
 
 const dom = new JSDOM('<!doctype html><div id="workspace"><button id="opener">Settings</button></div><div id="root"></div>', { url: "http://localhost", pretendToBeVisual: true });
 Object.assign(globalThis, { window: dom.window, document: dom.window.document, HTMLElement: dom.window.HTMLElement, Node: dom.window.Node, Event: dom.window.Event, CustomEvent: dom.window.CustomEvent, localStorage: dom.window.localStorage, sessionStorage: dom.window.sessionStorage, IS_REACT_ACT_ENVIRONMENT: true });
@@ -10,7 +11,7 @@ globalThis.cancelAnimationFrame = dom.window.cancelAnimationFrame.bind(dom.windo
 window.matchMedia = () => ({ matches: true, addEventListener() {}, removeEventListener() {} }) as unknown as MediaQueryList;
 window.scrollTo = () => {};
 const settings = baseSettings("standard");
-(window as unknown as { go: unknown }).go = { main: { App: { Settings: async () => settings, FetchAllProviderModels: async () => ({}) } } };
+installDesktopHostStub(({ main: { App: { Settings: async () => settings, FetchAllProviderModels: async () => ({}) } } }).main.App);
 const { default: React, act } = await import("react");
 const { createRoot } = await import("react-dom/client");
 const { useManagementWorkspace } = await import("../lib/useManagementWorkspace");
@@ -25,8 +26,13 @@ useAppNavigationStore.getState().openPage({ kind: "settings", tab: "general" });
 function WorkspaceBoundary({ children }: { children: React.ReactNode }) { useManagementWorkspace(workspaceRef, true); return children; }
 let closes = 0;
 const routes: string[] = [];
+function RoutedSettings() {
+  const route = useAppNavigationStore((state) => state.page);
+  const navigate = useAppNavigationStore((state) => state.setSettingsTarget);
+  return <SettingsPanel initialTab={route.kind === "settings" ? route.tab : undefined} desktopPlatform="linux" onClose={() => { closes++; }} onChanged={() => {}} onUseSubagent={() => {}} onNavigate={(tab) => { routes.push(tab); navigate(tab); }} />;
+}
 await act(async () => {
-  root.render(<LocaleProvider><WorkspaceBoundary><SettingsPanel initialTab="general" desktopPlatform="linux" onClose={() => { closes++; }} onChanged={() => {}} onUseSubagent={() => {}} onNavigate={(tab) => routes.push(tab)} /></WorkspaceBoundary></LocaleProvider>);
+  root.render(<LocaleProvider><WorkspaceBoundary><RoutedSettings /></WorkspaceBoundary></LocaleProvider>);
 });
 const page = document.querySelector<HTMLElement>(".settings-screen")!;
 assert.ok(page);
@@ -37,15 +43,26 @@ await act(async () => { document.dispatchEvent(new dom.window.KeyboardEvent("key
 assert.equal(closes, 0, "Escape must not leave a settings page");
 await act(async () => { page.dispatchEvent(new dom.window.MouseEvent("mousedown", { bubbles: true })); });
 assert.equal(closes, 0, "clicking the page background must not exit");
-const models = Array.from(page.querySelectorAll<HTMLButtonElement>("nav button")).find((button) => button.textContent?.trim() === "Models")!;
+const models = Array.from(page.querySelectorAll<HTMLButtonElement>("nav button")).find((button) => button.textContent?.trim() === "Model preferences")!;
 assert.ok(models);
 await act(async () => models.click());
 assert.deepEqual(routes, ["models"]);
-assert.ok(page.querySelector('[aria-current="page"]')?.textContent?.includes("Models"));
+assert.ok(page.querySelector('[aria-current="page"]')?.textContent?.includes("Model preferences"));
+for (const tab of ["model-stats", "providers", "models", "providers"] as const) {
+  const navButtons = Array.from(page.querySelectorAll<HTMLButtonElement>("nav button"));
+  const label = tab === "providers" ? "Model services" : tab === "models" ? "Model preferences" : "Usage stats";
+  const button = navButtons.find((item) => item.textContent?.trim() === label);
+  assert.ok(button, `${label} navigation exists`);
+  await act(async () => button.click());
+  assert.deepEqual(useAppNavigationStore.getState().page, { kind: "settings", tab });
+  assert.equal(useAppNavigationStore.getState().lastSettingsTarget, tab);
+  assert.equal(page.querySelector('[aria-current="page"]')?.textContent?.trim(), label);
+  assert.ok(page.querySelector(`.settings-page--${tab}`), `${label} remains rendered after route synchronization`);
+}
 const back = Array.from(page.querySelectorAll<HTMLButtonElement>("button")).find((button) => button.textContent?.trim() === "Back to workspace")!;
 await act(async () => back.click());
 assert.equal(closes, 1);
-useAppNavigationStore.getState().returnToWorkspace();
+await act(async () => useAppNavigationStore.getState().returnToWorkspace());
 await act(async () => root.unmount());
 assert.equal(workspaceRef.current.inert, false);
 assert.equal(document.activeElement, opener, "return restores the original entry's focus");

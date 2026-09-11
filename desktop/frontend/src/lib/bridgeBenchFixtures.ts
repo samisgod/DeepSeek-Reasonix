@@ -5,6 +5,14 @@
 
 import type { HistoryMessage, HistoryToolCall } from "./types";
 
+// Soak tests need async hydration, but not simulated backend latency per cycle.
+// Geometry/browser fixtures keep their delayed expansion contract by default.
+export function benchHydrationDelay(search = window.location.search): number {
+  const params = new URLSearchParams(search);
+  return params.get("mock") === "bench" && params.get("bench") === "1"
+    && params.get("app-lifecycle-probe") === "1" && params.get("bench-hydration") === "soak" ? 0 : 1_500;
+}
+
 // ── Benchmark fixtures (?mock=bench, Phase F) ─────────────────────────────
 // Fixed diagnostic sessions for the real-DOM performance harness
 // (desktop/frontend/bench). Content is deterministic and generated once per

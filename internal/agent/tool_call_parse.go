@@ -37,6 +37,9 @@ func (a *Agent) parseToolCall(ctx context.Context, turn *turnRuntime, plan *tool
 	if out, handled := recoverPreviousWrite(ctx, turn, recoveryCall, t); handled {
 		return out, true
 	}
+	if out, handled := recoverPreviousUnknown(turn, recoveryCall, t); handled {
+		return out, true
+	}
 
 	if out, blocked := a.repeatedSuccessBlock(plan.call, t); blocked {
 		return toolOutcome{
@@ -68,6 +71,11 @@ func (a *Agent) parseToolCall(ctx context.Context, turn *turnRuntime, plan *tool
 	plan.evidenceName = canonicalName
 	plan.evidenceArgs = json.RawMessage(plan.call.Arguments)
 	plan.readOnly = t.ReadOnly()
+	if canonicalName == "read_file" {
+		if out, blocked := a.resolveReadCursor(plan); blocked {
+			return out, true
+		}
+	}
 	if canonicalName == "bash" {
 		var permissionReader bool
 		plan.effects, permissionReader = evidence.ClassifyBashToolCall(plan.execArgs)

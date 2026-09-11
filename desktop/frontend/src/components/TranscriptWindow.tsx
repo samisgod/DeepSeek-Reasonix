@@ -1,52 +1,18 @@
+import { TranscriptPresentationProvider } from "./TranscriptPresentationContext";
+import { useNativeViewportSnapshot } from "../lib/useTranscriptNativeViewport";
 import { useVirtualizer } from "@tanstack/react-virtual";
-import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore, type ReactNode } from "react";
-import type { TranscriptKernel } from "../lib/transcriptKernel";
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from "react";
+import type { LogicalAnchor, TranscriptKernel } from "../lib/transcriptKernel";
 import type { ProjectionViewProps } from "./TranscriptProjectionView";
 import { TranscriptMeasurementLedger } from "../lib/transcriptMeasurementLedger";
 import type { TimelineBlock, TimelineProjection } from "../lib/transcriptTimeline";
-import { extractTranscriptWindowIndexes, type TranscriptWindowDirection } from "../lib/transcriptWindowRange";
+import { extractTranscriptWindowIndexes } from "../lib/transcriptWindowRange";
 import { commitTranscriptWindowGeometry, findTranscriptMeasurementPublicationBoundary, MAX_MOUNTED_COMPLETED_BLOCKS, type TranscriptWindowGeometry } from "../lib/transcriptWindowGeometry";
 
 const ANCHOR_MEASUREMENT_RADIUS = 4;
 // Keep enough mounted runway for native engines whose scroll event can arrive
 // ahead of TanStack's next range calculation. The browser fixtures enforce the
 // corresponding 40-block upper bound.
-
-type NativeViewportSnapshot = {
-  scrollTop: number;
-  clientHeight: number;
-  scrollHeight: number;
-  direction: TranscriptWindowDirection;
-};
-
-function useNativeViewportSnapshot(element: HTMLElement | null, kernel: Pick<TranscriptKernel, "generation">): NativeViewportSnapshot {
-  const cachedRef = useRef<NativeViewportSnapshot>({ scrollTop: 0, clientHeight: 0, scrollHeight: 0, direction: null });
-  const getSnapshot = useCallback(() => {
-    const scrollTop = element?.scrollTop ?? 0;
-    const clientHeight = element?.clientHeight ?? 0;
-    const scrollHeight = element?.scrollHeight ?? 0;
-    const cached = cachedRef.current;
-    if (Object.is(cached.scrollTop, scrollTop) && Object.is(cached.clientHeight, clientHeight) && Object.is(cached.scrollHeight, scrollHeight)) return cached;
-    const direction = scrollTop > cached.scrollTop ? "forward" : scrollTop < cached.scrollTop ? "backward" : cached.direction;
-    cachedRef.current = { scrollTop, clientHeight, scrollHeight, direction };
-    return cachedRef.current;
-  }, [element]);
-  const subscribe = useCallback((notify: () => void) => {
-    if (!element) return () => {};
-    const generation = kernel.generation;
-    let active = true;
-    const handleChange = () => { if (active && generation === kernel.generation) notify(); };
-    element.addEventListener("scroll", handleChange, { passive: true });
-    const observer = typeof ResizeObserver === "undefined" ? null : new ResizeObserver(handleChange);
-    observer?.observe(element);
-    return () => {
-      active = false;
-      element.removeEventListener("scroll", handleChange);
-      observer?.disconnect();
-    };
-  }, [element, kernel]);
-  return useSyncExternalStore(subscribe, getSnapshot, getSnapshot);
-}
 
 export default function TranscriptWindow({
   projection,
@@ -64,7 +30,7 @@ export default function TranscriptWindow({
   projection: TimelineProjection;
   scrollElement: HTMLDivElement | null;
   onGeometryChange: (covered?: boolean, beforePaint?: boolean) => void;
-  onGeometryWillChange: () => unknown;
+  onGeometryWillChange: (anchor?: LogicalAnchor) => unknown;
   protectedBlockKeys: ReadonlySet<string>;
   kernel: Pick<TranscriptKernel, "anchor" | "generation" | "intent" | "userGestureActive" | "afterCurrentGenerationPaint">;
   pinnedJumpBlockKey?: string;
@@ -133,9 +99,33 @@ export default function TranscriptWindow({
   // Materialize TanStack's prefix-size ledger before reading either its
   // asynchronous candidate range or the synchronous recovery input.
   const totalSize = virtualizer.getTotalSize();
+  // Newly materialized DOM is measured before its first paint. A single
+  // window origin preserves already-visible blocks when those new sizes
+  // refine the prefix above them, without writing during native input.
+  const materializedElements = useRef(new WeakSet<Element>());
+  const windowOrigin = useRef(0);
+  const materializationAnchor = useRef<{ generation: number; key?: string; tailOffset?: number; top: number } | null>(null);
+  const materializationGeneration = useRef(kernel.generation);
+  if (materializationGeneration.current !== kernel.generation) {
+    materializationGeneration.current = kernel.generation;
+    materializedElements.current = new WeakSet();
+    windowOrigin.current = 0;
+    materializationAnchor.current = null;
+  }
+  const pendingAnchor = materializationAnchor.current;
+  const anchorStart = pendingAnchor?.key
+    ? virtualizer.measurementsCache[coldIndexByKey.get(pendingAnchor.key) ?? -1]?.start
+    : pendingAnchor?.tailOffset != null ? scrollMargin + totalSize + pendingAnchor.tailOffset : undefined;
+  const refinedOrigin = pendingAnchor?.generation === kernel.generation && anchorStart != null
+    ? pendingAnchor.top - anchorStart : windowOrigin.current;
+  // Consume the temporary origin continuously as native travel approaches
+  // the leading edge. Clearing it only at zero would create a discontinuity;
+  // carrying it through zero would make the first content unreachable.
+  const origin = Math.max(-nativeViewport.scrollTop, Math.min(nativeViewport.scrollTop, refinedOrigin));
   const candidateItems = virtualizer.getVirtualItems();
   const committedGeometryRef = useRef<TranscriptWindowGeometry<(typeof candidateItems)[number]> | undefined>(undefined);
   const pendingMeasurementCommit = useRef(false);
+  const measurementNeedsRender = useRef(false);
   const structureRevision = `${split.cold.length}:${split.cold[0]?.key ?? ""}:${split.cold[split.cold.length - 1]?.key ?? ""}`;
   const geometry = commitTranscriptWindowGeometry({
     candidate: candidateItems,
@@ -145,7 +135,7 @@ export default function TranscriptWindow({
     residentCount: split.resident.length,
     forceFull,
     structureRevision,
-    scrollTop: nativeViewport.scrollTop,
+    scrollTop: nativeViewport.scrollTop - origin,
     clientHeight: nativeViewport.clientHeight,
     scrollHeight: nativeViewport.scrollHeight,
     scrollMargin,
@@ -161,14 +151,13 @@ export default function TranscriptWindow({
   const logicalAnchorIndex = kernel.anchor.kind === "block"
     ? coldIndexByKey.get(kernel.anchor.blockKey)
     : undefined;
-  const rangeRevision = `${committedRange.scrollMargin}:${committedRange.totalSize}|${virtualItems.map((item) => `${String(item.key)}:${item.start}:${item.size}`).join("|")}`;
+  const rangeRevision = `${origin}:${committedRange.scrollMargin}:${committedRange.totalSize}|${virtualItems.map((item) => `${String(item.key)}:${item.start}:${item.size}`).join("|")}`;
 
   useLayoutEffect(() => {
     committedGeometryRef.current = geometry;
-    const beforePaint = geometry.measurementCommitted;
-    if (beforePaint) pendingMeasurementCommit.current = false;
-    onGeometryChange(geometry.covered, beforePaint);
-  }, [geometry, onGeometryChange]);
+    windowOrigin.current = origin;
+    materializationAnchor.current = null;
+  }, [geometry, origin]);
   useLayoutEffect(() => {
     if (!minimumResidentKey || currentResidentIndex >= 0) return;
     setResidentStartKey(minimumResidentKey);
@@ -211,7 +200,11 @@ export default function TranscriptWindow({
     const rect = target.getBoundingClientRect();
     if (rect.bottom >= viewport.top && rect.top <= viewport.bottom) onPinnedJumpVisible();
   }, [onPinnedJumpVisible, pinnedJumpBlockKey, rangeRevision, scrollElement]);
+  const surfaceGeneration = kernel.generation;
   const [measurementRevision, setMeasurementRevision] = useState(0);
+  const presentationChanged = useCallback(() => setMeasurementRevision(value => value + 1), []);
+  const presentation = useMemo(() => ({ gestureActive: kernel.userGestureActive, windowed: true, geometryChanged: presentationChanged }),
+    [kernel.userGestureActive, presentationChanged]);
   useLayoutEffect(() => {
     const container = residentTailRef.current;
     if (!container || typeof ResizeObserver === "undefined") return;
@@ -229,19 +222,42 @@ export default function TranscriptWindow({
     // mounted blocks so local folds and deferred Markdown invalidate geometry.
     container.querySelectorAll(".transcript__window-item").forEach(element => observer.observe(element));
     return () => { disposed = true; observer.disconnect(); cancelFrame?.(); };
-  }, [fullDOMFallback, kernel, rangeRevision]);
+  }, [fullDOMFallback, kernel, rangeRevision, surfaceGeneration]);
   const measuredItems = fullDOMFallback ? geometry.prefix.items : virtualItems;
   useLayoutEffect(() => {
+    measurementNeedsRender.current = false;
     const container = residentTailRef.current;
     const changes: Array<{ key: string; size: number }> = [];
+    const firstMeasurements = new Set<string>();
     const viewport = scrollElement?.getBoundingClientRect();
     const observedTop = scrollElement?.scrollTop ?? nativeViewport.scrollTop;
     const clientHeight = scrollElement?.clientHeight ?? nativeViewport.clientHeight;
     const domItems: Array<{ index: number; top: number }> = [];
+    const blocks = Array.from(container?.querySelectorAll<HTMLElement>("[data-transcript-block-key]") ?? []);
+    const visible = blocks.filter(element => {
+      const rect = element.getBoundingClientRect();
+      return viewport && rect.bottom > viewport.top + 0.5 && rect.top < viewport.top + clientHeight;
+    });
+    const common = visible.find(element => materializedElements.current.has(element));
+    const commonKey = common?.dataset.transcriptBlockKey;
+    const commonItem = commonKey ? measuredItems.find(item => String(item.key) === commonKey) : undefined;
+    // The committed prefix is independent of compositor progress. Rebuilding
+    // a cold content coordinate from separately sampled DOMRect/scrollTop
+    // would let a native advance between those reads become an origin error.
+    const commonTop = commonItem ? commonItem.start + origin
+      : common && viewport ? common.getBoundingClientRect().top - viewport.top + (scrollElement?.scrollTop ?? observedTop) : undefined;
+    // Origin removal converts the already-painted coordinate system. Choose
+    // from its committed prefix, never from DOM heights that have just changed.
+    const committedVisible = measuredItems.find(item => item.start + origin + item.size > observedTop + 0.5
+      && item.start + origin < observedTop + clientHeight);
+    const originAnchor: LogicalAnchor | undefined = committedVisible
+      ? { kind: "block", blockKey: String(committedVisible.key), offsetPx: observedTop - (committedVisible.start + origin) }
+      : undefined;
     if (container) {
       for (const item of measuredItems) {
         const element = container.querySelector<HTMLElement>(`.transcript__window-item[data-index="${item.index}"]`);
         if (!element) continue;
+        if (!materializedElements.current.has(element)) firstMeasurements.add(String(item.key));
         const rect = element.getBoundingClientRect();
         if (viewport) domItems.push({ index: item.index, top: rect.top - viewport.top });
         const size = Math.max(64, rect.height || element.offsetHeight);
@@ -254,18 +270,31 @@ export default function TranscriptWindow({
     // Re-read native progress at publication; a render's snapshot can be older.
     const publicationTop = Math.max(observedTop, scrollElement?.scrollTop ?? observedTop);
     const measurementBoundaryIndex = findTranscriptMeasurementPublicationBoundary({
-      paintedItems: measuredItems, domItems, scrollTop: publicationTop, clientHeight,
+      paintedItems: measuredItems.map(item => ({ ...item, start: item.start + origin })), domItems, scrollTop: publicationTop, clientHeight,
       anchorIndex: logicalAnchorIndex,
     });
     const published = measurementLedger.publishStaged((key) => {
       const index = coldIndexByKey.get(key);
-      return kernel.intent === "reader" && index != null && (
+      return index != null && (firstMeasurements.has(key) || (kernel.intent === "reader" && (
         !kernel.userGestureActive
         || (measurementBoundaryIndex != null && index >= measurementBoundaryIndex)
-      );
+      )));
     });
-    if (published.length > 0) {
-      if (!kernel.userGestureActive) onGeometryWillChange();
+    blocks.forEach(element => materializedElements.current.add(element));
+    const releaseOrigin = !kernel.userGestureActive && Math.abs(origin) > 0.5;
+    if (published.length > 0 || releaseOrigin) {
+      measurementNeedsRender.current = true;
+      if (!kernel.userGestureActive) {
+        // Ordinary content growth belongs to the input-captured anchor;
+        // a newly enlarged preceding DOM block must not replace that owner.
+        onGeometryWillChange(releaseOrigin ? originAnchor : undefined);
+        windowOrigin.current = 0;
+      } else if (common && commonTop != null && published.some(change => firstMeasurements.has(change.key))) {
+        const key = common.dataset.transcriptBlockKey!;
+        materializationAnchor.current = coldIndexByKey.has(key)
+          ? { generation: kernel.generation, key, top: commonTop }
+          : { generation: kernel.generation, tailOffset: commonTop - (scrollMargin + totalSize + origin), top: commonTop };
+      }
       pendingMeasurementCommit.current = true;
       // Feed only the atomically published batch into TanStack's keyed size
       // cache. `measure()` is intentionally forbidden here: it clears that
@@ -283,7 +312,18 @@ export default function TranscriptWindow({
       setMeasurementRevision(revision => revision + 1);
       return;
     }
-  }, [coldIndexByKey, fullDOMFallback, kernel.intent, kernel.userGestureActive, logicalAnchorIndex, measuredItems, measurementLedger, measurementRevision, nativeViewport.clientHeight, nativeViewport.scrollTop, onGeometryChange, onGeometryWillChange, projection.activeBlock?.measurementRevision, rangeRevision, scrollElement, split.resident, virtualItems, virtualizer]);
+  }, [coldIndexByKey, fullDOMFallback, kernel.intent, kernel.userGestureActive, logicalAnchorIndex, measuredItems, measurementLedger, measurementRevision, nativeViewport.clientHeight, nativeViewport.scrollTop, onGeometryChange, onGeometryWillChange, projection.activeBlock?.measurementRevision, rangeRevision, scrollElement, split.resident, virtualItems, virtualizer, origin, scrollMargin, totalSize]);
+
+  useLayoutEffect(() => {
+    // Estimates are preparation, not trustworthy painted geometry. Only
+    // acknowledge after every first-materialization size has entered the
+    // same prefix; otherwise tail correction/health checks see an intermediate
+    // extent and can latch safety while this commit is still measuring it.
+    if (measurementNeedsRender.current) return;
+    const beforePaint = geometry.measurementCommitted;
+    if (beforePaint) pendingMeasurementCommit.current = false;
+    onGeometryChange(geometry.covered, beforePaint);
+  }, [geometry, onGeometryChange]);
 
   // Safety disables range eviction, not the last trustworthy prefix. Reflowing
   // every cold estimate into natural DOM would move a held reader without any
@@ -293,10 +333,10 @@ export default function TranscriptWindow({
   const mounted = fullDOMFallback ? projection.completedBlocks
     : [...virtualItems.map((item) => split.cold[item.index]), ...split.resident];
   const placements = new Map(prefix.items.map((item) => [String(item.key),
-    { index: item.index, top: item.start - prefix.margin }]));
-  return renderProjection({ blocks: [...mounted, ...(projection.activeBlock ? [projection.activeBlock] : [])],
-    placements, extent: prefix.extent,
+    { index: item.index, top: item.start - prefix.margin + origin }]));
+  return <TranscriptPresentationProvider value={presentation}>{renderProjection({ blocks: [...mounted, ...(projection.activeBlock ? [projection.activeBlock] : [])],
+    placements, extent: Math.max(0, prefix.extent + origin),
     spacerRef: coldContainerRef, tailRef: residentTailRef, mode: fullDOMFallback ? "full" : "windowed",
     safety: fullDOMFallback, completedCount: projection.completedBlocks.length,
-    revision: `${fullDOMFallback}:${rangeRevision}:${projection.activeBlock?.measurementRevision}` });
+    revision: `${fullDOMFallback}:${rangeRevision}:${projection.activeBlock?.measurementRevision}` })}</TranscriptPresentationProvider>;
 }
