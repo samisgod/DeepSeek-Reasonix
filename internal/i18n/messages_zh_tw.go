@@ -567,6 +567,8 @@ var ChineseTraditional = Messages{
   reasonix config reasoning-language [auto|zh|en]        設定可見思考語言
   reasonix config compact-ratio [--local] [30..85]       設定自動壓縮閾值
   reasonix config telemetry [auto|on|off]                設定不含內容的 CLI 使用統計
+  reasonix config portable [on|off|status]               把資料保存在程式所在目錄
+  reasonix secrets <status|set|change|unlock|disable>    用主密碼保護已儲存的 API Key
   reasonix report [list|show|send|delete] [ID]           審閱並明確傳送本機 CLI 當機報告
   reasonix mcp <add|remove|list|import>                 管理 reasonix.toml 裡的 MCP 伺服器
   reasonix subagent <list|create|edit|delete|try|run>   管理和執行隔離子智慧體 profile

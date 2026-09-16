@@ -73,6 +73,37 @@ func uniqueStrings(values []string) []string {
 	return out
 }
 
+// normalizeCommandArgv resolves the leading subcommand token and the two
+// implicit forms:
+//
+//   - `--acp` is the flag spelling of the acp subcommand.
+//   - -p/--print is one-shot print mode. reasonix has no interactive -p, so a
+//     print flag anywhere in a leading flag run (no explicit subcommand) routes
+//     the whole set to `run --print` — `reasonix --model X -p "task"` works, not
+//     only `reasonix -p ...`.
+//   - a bare interactive flag means "no subcommand", i.e. the default
+//     interactive session.
+//
+// It returns the resolved command ("" for the interactive default) and the argv
+// with any injected `run --print` prefix applied.
+func normalizeCommandArgv(args []string) (string, []string) {
+	cmd := ""
+	if len(args) > 0 {
+		cmd = args[0]
+	}
+	if cmd == "--acp" {
+		cmd = "acp"
+	}
+	if cmd == "-p" || cmd == "--print" || (isDefaultInteractiveFlag(cmd) && hasLeadingPrintFlag(args)) {
+		args = append([]string{"run", "--print"}, stripLeadingPrintFlag(args)...)
+		cmd = "run"
+	}
+	if len(args) > 0 && isDefaultInteractiveFlag(cmd) {
+		cmd = ""
+	}
+	return cmd, args
+}
+
 // hasLeadingPrintFlag reports whether a standalone -p/--print token appears in
 // the top-level flag run, i.e. before any "--" terminator. reasonix has no
 // interactive -p, so its presence means the user wants one-shot print mode even

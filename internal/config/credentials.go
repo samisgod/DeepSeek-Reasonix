@@ -11,9 +11,6 @@ import (
 	"time"
 
 	"github.com/joho/godotenv"
-
-	"reasonix/internal/fileutil"
-	fileencoding "reasonix/internal/fileutil/encoding"
 )
 
 const (
@@ -747,7 +744,9 @@ func removeCredentialFromFile(path, key string) error {
 }
 
 func readCredentialFileLines(path string) ([]string, error) {
-	data, err := fileencoding.ReadFileUTF8(path)
+	// readCredentialText transparently decrypts a master-password protected
+	// credential store; plain .env files pass through untouched.
+	data, err := readCredentialText(path)
 	if err != nil {
 		if os.IsNotExist(err) {
 			return nil, nil
@@ -769,35 +768,9 @@ func writeCredentialFileLines(path string, lines []string) error {
 	if len(lines) > 0 {
 		out = strings.Join(lines, "\n") + "\n"
 	}
-	dir := filepath.Dir(path)
-	if dir != "" && dir != "." {
-		if err := os.MkdirAll(dir, 0o700); err != nil {
-			return err
-		}
-	}
-	tmp, err := os.CreateTemp(dir, "credentials.*.tmp")
-	if err != nil {
-		return err
-	}
-	tmpPath := tmp.Name()
-	if _, err := tmp.WriteString(out); err != nil {
-		tmp.Close()
-		os.Remove(tmpPath)
-		return err
-	}
-	if err := tmp.Close(); err != nil {
-		os.Remove(tmpPath)
-		return err
-	}
-	if err := os.Chmod(tmpPath, 0o600); err != nil {
-		os.Remove(tmpPath)
-		return err
-	}
-	if err := fileutil.ReplaceFile(tmpPath, path); err != nil {
-		os.Remove(tmpPath)
-		return err
-	}
-	return nil
+	// Re-encrypt when the credential store is master-password protected, so
+	// every credential write keeps the at-rest guarantee.
+	return writeCredentialsBytes(path, []byte(out), MasterPasswordConfigured())
 }
 
 func credentialLineKey(line string) (string, bool) {

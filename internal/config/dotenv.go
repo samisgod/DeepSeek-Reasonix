@@ -7,8 +7,6 @@ import (
 	"strings"
 
 	"github.com/joho/godotenv"
-
-	fileencoding "reasonix/internal/fileutil/encoding"
 )
 
 type dotEnvFile struct {
@@ -124,7 +122,9 @@ func loadDotEnvFileAs(path string, source CredentialSource) {
 }
 
 func readDotEnvFile(path string) (dotEnvFile, bool) {
-	raw, err := fileencoding.ReadFileUTF8(path)
+	// readCredentialText transparently decrypts a master-password protected
+	// credential store; plain dotenv files pass through untouched.
+	raw, err := readCredentialText(path)
 	if err != nil {
 		return dotEnvFile{}, false
 	}
@@ -135,7 +135,7 @@ func readDotEnvFile(path string) (dotEnvFile, bool) {
 	return dotEnvFile{
 		Path:       path,
 		Values:     values,
-		Duplicates: detectDotEnvDuplicateKeys(path),
+		Duplicates: detectDotEnvDuplicateKeys(string(raw)),
 	}, true
 }
 
@@ -165,14 +165,10 @@ func (f dotEnvFile) warnings() []string {
 	return warnings
 }
 
-func detectDotEnvDuplicateKeys(path string) []string {
-	raw, err := fileencoding.ReadFileUTF8(path)
-	if err != nil {
-		return nil
-	}
+func detectDotEnvDuplicateKeys(text string) []string {
 	seen := map[string]bool{}
 	dups := map[string]bool{}
-	for line := range strings.SplitSeq(strings.ReplaceAll(string(raw), "\r\n", "\n"), "\n") {
+	for line := range strings.SplitSeq(strings.ReplaceAll(text, "\r\n", "\n"), "\n") {
 		values, err := godotenv.Unmarshal(line)
 		if err != nil {
 			continue

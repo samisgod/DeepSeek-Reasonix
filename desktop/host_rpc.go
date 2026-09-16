@@ -115,6 +115,14 @@ func runEmitContract(dir string) int {
 // shell closes stdin or acknowledges desktop/shutdown. It returns the
 // process exit code.
 func runHostRPC(app *App, stdin io.Reader, stdout io.Writer) int {
+	// Master-password protected credential store: unlock from the environment
+	// when the shell provides it. A locked store leaves provider keys unreadable
+	// instead of failing the host, so the UI can still guide the user.
+	if unlocked, err := config.TryAutoUnlockMasterPassword(); err != nil {
+		slog.Error("desktop host: unlock credential store", "err", err)
+	} else if !unlocked && config.MasterPasswordConfigured() {
+		slog.Warn("desktop host: credential store is locked; provide " + config.MasterPasswordEnvVar + " or run `reasonix secrets unlock`")
+	}
 	stopEndpoint, err := startUpdateEndpoint()
 	if err != nil {
 		slog.Error("desktop host: update endpoint", "err", err)

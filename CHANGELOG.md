@@ -8,6 +8,20 @@ branch.
 
 ### Added
 
+- **Portable data folder:** `reasonix config portable on` (or a
+  `reasonix.portable` marker beside the executable) keeps global config, skills,
+  commands, sessions, and credentials in `<executable dir>/reasonix-data`, so a
+  copied install is fully self-contained. `REASONIX_PORTABLE_DIR` relocates the
+  folder, `REASONIX_PORTABLE=on|off|auto` forces the decision, and an explicit
+  `REASONIX_HOME` still wins.
+- **Master-password credential store:** `reasonix secrets set` encrypts
+  `<Reasonix home>/.env` (provider API keys, bot secrets, remote-SSH passwords)
+  with AES-256-GCM under a scrypt-derived key, and `change`, `unlock`,
+  `disable`, and `status` manage it afterwards. Every credential reader and
+  writer stays transparent, and a locked store refuses to downgrade to
+  plaintext. Unlock comes from a terminal prompt or
+  `REASONIX_MASTER_PASSWORD[_FILE]`.
+
 - **Live file observations:** structured file tools now protect mutations with
   a host-owned current-version observation. Any successful text window is
   sufficient, successful writes refresh the version, and external changes

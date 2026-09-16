@@ -26,6 +26,51 @@ provider credentials: those remain under `REASONIX_HOME`. If an older build wrot
 provider keys to `REASONIX_STATE_HOME/.env`, Reasonix imports those keys
 non-destructively when `<Reasonix home>/.env` is missing them.
 
+## Portable installs
+
+Portable mode keeps everything Reasonix owns — global config, skills, commands,
+hooks, sessions, credentials, caches — in one data folder beside the executable,
+so a directory copy of the install is self-contained and can be moved to another
+machine or a USB stick.
+
+| Switch | Effect |
+| --- | --- |
+| `reasonix config portable on` | write a `reasonix.portable` marker beside the executable |
+| `reasonix config portable off` | remove the marker |
+| `reasonix config portable status` | print the effective home, data folder, source, and marker path |
+| `REASONIX_PORTABLE=on\|off\|auto` | force portable mode on or off; `auto` (also the unset default) decides by the marker |
+| `REASONIX_PORTABLE_DIR` | relocate the data folder (default `<executable dir>/reasonix-data`) |
+
+Reasonix home resolves as: `REASONIX_HOME`, then the portable data folder, then
+the platform default. Because portable mode reports a non-empty isolated home,
+legacy migration and OS-home convention scanning are skipped, so no data leaks
+in from a system-wide install.
+
+## Master password
+
+`reasonix secrets set` encrypts the credential store (`<Reasonix home>/.env`)
+with AES-256-GCM under a key derived from a master password with scrypt. The file
+keeps its path but becomes a self-describing JSON container.
+
+| Command | Effect |
+| --- | --- |
+| `reasonix secrets status [--json]` | protection state and the credential store path |
+| `reasonix secrets set` | encrypt the store (prompts twice, or `--password-stdin`) |
+| `reasonix secrets change` | re-key the store (reads the current password, then the new one) |
+| `reasonix secrets unlock` | verify a master password |
+| `reasonix secrets disable` | decrypt back to a plaintext `.env` |
+
+Commands that read provider credentials unlock first, in order: a terminal
+prompt (three attempts), `REASONIX_MASTER_PASSWORD`, or the file named by
+`REASONIX_MASTER_PASSWORD_FILE`. A locked store never downgrades to plaintext —
+writes fail with `credentials store is locked` instead of overwriting the vault
+with cleartext — and reads report the credentials as unset.
+
+Losing the master password makes the stored credentials unrecoverable; there is
+no recovery key. The scope is the credential store only: `config.toml`,
+sessions, and other state stay unencrypted, so rely on OS full-disk encryption
+for those.
+
 ## What Lives There
 
 | Data | Path |

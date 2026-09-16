@@ -80,25 +80,13 @@ func RunWithBuildInfo(args []string, info BuildInfo) int {
 	// welcome banner) come through localized. Env-only first; if a config
 	// exists and pins a language, that wins.
 	i18n.DetectLanguage("")
-	cmd := ""
-	if len(args) > 0 {
-		cmd = args[0]
-	}
-	if cmd == "--acp" {
-		cmd = "acp"
-	}
-	// -p/--print is one-shot print mode. reasonix has no interactive -p, so a
-	// print flag anywhere in a leading flag run (no explicit subcommand) routes
-	// the whole set to `run --print` — `reasonix --model X -p "task"` works, not
-	// only `reasonix -p ...`.
-	if cmd == "-p" || cmd == "--print" || (isDefaultInteractiveFlag(cmd) && hasLeadingPrintFlag(args)) {
-		args = append([]string{"run", "--print"}, stripLeadingPrintFlag(args)...)
-		cmd = "run"
-	}
-	if len(args) > 0 && isDefaultInteractiveFlag(cmd) {
-		cmd = ""
-	}
+	cmd, args := normalizeCommandArgv(args)
 	doctorRepair := isDoctorRepairCommand(args)
+	// Unlock a master-password protected credential store before anything reads
+	// or migrates credentials, otherwise every provider key resolves as unset.
+	if code := unlockCredentialStoreForCommand(cmd); code != 0 {
+		return code
+	}
 	if shouldMigrateLegacyConfigForCLI(cmd) && !doctorRepair {
 		migrateLegacyConfigForCLI()
 	}
@@ -138,6 +126,8 @@ func RunWithBuildInfo(args []string, info BuildInfo) int {
 	case "config":
 		configureCLIThemeFromConfig()
 		return configCommand(rest)
+	case "secrets", "vault":
+		return secretsCommand(rest)
 	case "init":
 		// Project memory (AGENTS.md) is model-generated in-session — `/init` runs
 		// the codebase analysis. This CLI entry just points there (and to `setup`
@@ -2340,28 +2330,6 @@ func (a ctrlKillerAdapter) Kill(sessionID, id string) bool {
 	return a.ctrl.CancelJob(id)
 }
 
-func configCommand(args []string) int {
-	if len(args) == 0 {
-		configUsage()
-		return 2
-	}
-	switch args[0] {
-	case "auto-plan":
-		return configAutoPlanCompatibilityCommand(args[1:])
-	case "reasoning-language":
-		return configReasoningLanguageCommand(args[1:])
-	case "compact-ratio":
-		return configCompactRatioCommand(args[1:])
-	case "currency":
-		return configCurrencyCommand(args[1:])
-	case "telemetry":
-		return configTelemetryCommand(args[1:])
-	default:
-		configUsage()
-		return 2
-	}
-}
-
 func configCurrencyCommand(args []string) int {
 	fs := flag.NewFlagSet("config currency", flag.ContinueOnError)
 	local := fs.Bool("local", false, "unsupported; pricing currency is user-level only")
@@ -2667,27 +2635,6 @@ func compactRatioSource() string {
 func formatCompactRatioPercent(ratio float64) string {
 	value := strings.TrimRight(strings.TrimRight(fmt.Sprintf("%.2f", ratio*100), "0"), ".")
 	return value + "%"
-}
-
-func configUsage() {
-	fmt.Print(`Usage:
-  reasonix config reasoning-language [--local] [auto|zh|en]
-  reasonix config compact-ratio [--local] [30..85]
-  reasonix config currency [auto|CNY|USD]
-  reasonix config telemetry [auto|on|off]
-`)
-}
-
-func configTelemetryUsage() {
-	fmt.Print(`Usage:
-  reasonix config telemetry [auto|on|off]
-`)
-}
-
-func configCompactRatioUsage() {
-	fmt.Print(`Usage:
-  reasonix config compact-ratio [--local] [30..85]
-`)
 }
 
 func startCLITelemetry(cfg *config.Config, opts telemetry.Options) *telemetry.Reporter {

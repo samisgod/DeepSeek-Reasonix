@@ -122,6 +122,35 @@ func TestStripLeadingPrintFlag(t *testing.T) {
 	}
 }
 
+// TestNormalizeCommandArgv pins the argv-level routing that decides which
+// subcommand a top-level invocation becomes, including the implicit print and
+// interactive forms.
+func TestNormalizeCommandArgv(t *testing.T) {
+	cases := []struct {
+		name     string
+		args     []string
+		wantCmd  string
+		wantArgs []string
+	}{
+		{"empty", nil, "", nil},
+		{"explicit subcommand", []string{"run", "task"}, "run", []string{"run", "task"}},
+		{"acp flag spelling", []string{"--acp"}, "acp", []string{"--acp"}},
+		{"print first", []string{"-p", "task"}, "run", []string{"run", "--print", "task"}},
+		{"print inside a flag run", []string{"--model", "x", "-p", "task"}, "run", []string{"run", "--print", "--model", "x", "task"}},
+		{"bare interactive flag", []string{"--model", "x"}, "", []string{"--model", "x"}},
+		{"bare interactive flag with = form", []string{"--model=x"}, "", []string{"--model=x"}},
+		{"terminator is not a known command", []string{"--", "-p"}, "--", []string{"--", "-p"}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			cmd, args := normalizeCommandArgv(tc.args)
+			if cmd != tc.wantCmd || !reflect.DeepEqual(args, tc.wantArgs) {
+				t.Fatalf("normalizeCommandArgv(%#v) = %q, %#v; want %q, %#v", tc.args, cmd, args, tc.wantCmd, tc.wantArgs)
+			}
+		})
+	}
+}
+
 func TestResolveSessionQueryByMachineSessionID(t *testing.T) {
 	identityKey := installMachineTestIdentity(t)
 	dir := t.TempDir()

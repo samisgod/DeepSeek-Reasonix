@@ -55,6 +55,35 @@ func catalogCompletionSpec(help cliCompletionFlag) cliCompletionSpec {
 	return completionSpec("catalogs", []cliCompletionFlag{help}, completionSpec("reindex", []cliCompletionFlag{help}, reindex...))
 }
 
+// configCompletionSpec covers `reasonix config`. It is kept out of
+// cliCompletionRootSpec so the root spec stays within its size budget.
+func configCompletionSpec(help cliCompletionFlag) cliCompletionSpec {
+	local := []cliCompletionFlag{completionFlag("--local", cliCompletionNoValue), help}
+	return completionSpec("config", []cliCompletionFlag{help},
+		completionSpec("auto-plan", local),
+		completionSpec("reasoning-language", local),
+		completionSpec("compact-ratio", local),
+		completionSpec("currency", local),
+		completionSpec("telemetry", []cliCompletionFlag{help}),
+		completionSpec("portable", []cliCompletionFlag{
+			completionFlag("--json", cliCompletionNoValue), help,
+		}),
+	)
+}
+
+// secretsCompletionSpec covers the master-password commands. It is kept out of
+// cliCompletionRootSpec so the root spec stays within its size budget.
+func secretsCompletionSpec(help cliCompletionFlag) cliCompletionSpec {
+	passwordStdin := []cliCompletionFlag{completionFlag("--password-stdin", cliCompletionNoValue), help}
+	return completionSpecWithAliases("secrets", []string{"vault"}, []cliCompletionFlag{help},
+		completionSpec("status", []cliCompletionFlag{completionFlag("--json", cliCompletionNoValue), help}),
+		completionSpec("set", passwordStdin),
+		completionSpec("change", passwordStdin),
+		completionSpec("unlock", passwordStdin),
+		completionSpec("disable", passwordStdin),
+	)
+}
+
 func cliCompletionRootSpec() cliCompletionSpec {
 	model := completionFlag("--model", cliCompletionModelValue)
 	resume := completionFlag("--resume -r", cliCompletionOptionalValue) // optional QUERY
@@ -119,13 +148,8 @@ func cliCompletionRootSpec() cliCompletionSpec {
 		completionSpec("serve", serveFlags),
 		completionSpec("web", serveFlags),
 		completionSpec("setup", []cliCompletionFlag{completionFlag("--local -l", cliCompletionNoValue), help}),
-		completionSpec("config", []cliCompletionFlag{help},
-			completionSpec("auto-plan", []cliCompletionFlag{completionFlag("--local", cliCompletionNoValue), help}),
-			completionSpec("reasoning-language", []cliCompletionFlag{completionFlag("--local", cliCompletionNoValue), help}),
-			completionSpec("compact-ratio", []cliCompletionFlag{completionFlag("--local", cliCompletionNoValue), help}),
-			completionSpec("currency", []cliCompletionFlag{completionFlag("--local", cliCompletionNoValue), help}),
-			completionSpec("telemetry", []cliCompletionFlag{help}),
-		),
+		configCompletionSpec(help),
+		secretsCompletionSpec(help),
 		completionSpec("init", []cliCompletionFlag{help}),
 		completionSpec("acp", []cliCompletionFlag{
 			model,

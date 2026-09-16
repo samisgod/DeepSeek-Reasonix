@@ -626,6 +626,8 @@ Usage:
   reasonix config reasoning-language [auto|zh|en]        configure visible reasoning language
   reasonix config compact-ratio [--local] [30..85]       configure automatic compaction threshold
   reasonix config telemetry [auto|on|off]                configure content-free CLI usage metrics
+  reasonix config portable [on|off|status]               keep data in a folder beside the executable
+  reasonix secrets <status|set|change|unlock|disable>    master-password protect stored API keys
   reasonix report [list|show|send|delete] [ID]           review and explicitly send local CLI crash reports
   reasonix mcp <add|remove|list|import>                 manage MCP servers in reasonix.toml
   reasonix subagent <list|create|edit|delete|try|run>   manage and run isolated subagent profiles

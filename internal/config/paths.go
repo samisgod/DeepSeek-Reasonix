@@ -45,7 +45,7 @@ func userConfigDir() string {
 }
 
 func reasonixHomeDir() string {
-	if dir := cleanEnvDir("REASONIX_HOME"); dir != "" {
+	if dir := isolatedHomeDir(); dir != "" {
 		return dir
 	}
 	if runtimeGOOS == "windows" {
@@ -169,7 +169,7 @@ func userCacheDir() string {
 	if dir := cleanEnvDir("REASONIX_CACHE_HOME"); dir != "" {
 		return dir
 	}
-	if dir := cleanEnvDir("REASONIX_HOME"); dir != "" {
+	if dir := isolatedHomeDir(); dir != "" {
 		return filepath.Join(dir, "cache")
 	}
 	dir := osUserCacheDir()
@@ -217,12 +217,13 @@ func samePath(a, b string) bool {
 	return filepath.Clean(a) == filepath.Clean(b)
 }
 
-// IsolatedHomeDir returns the REASONIX_HOME directory when it has been
-// explicitly set via the environment variable. A non-empty return signals a
+// IsolatedHomeDir returns the self-contained home directory in effect: the
+// REASONIX_HOME directory when it has been explicitly set, otherwise the
+// portable data folder when portable mode is on. A non-empty return signals a
 // self-contained runtime that must not fall back to legacy OS-default data
 // paths or import data from the system-wide production install.
 func IsolatedHomeDir() string {
-	return cleanEnvDir("REASONIX_HOME")
+	return isolatedHomeDir()
 }
 
 // userConfigDisplayPath is userConfigPath collapsed to a ~-relative form for
@@ -308,9 +309,10 @@ func appendUniquePath(paths []string, path string) []string {
 }
 
 // ReasonixHomeDir is the current Reasonix home directory. It honors
-// REASONIX_HOME, then uses ~/.reasonix on macOS/Linux or %APPDATA%/reasonix on
-// Windows, with a %USERPROFILE%/AppData/Roaming fallback when %APPDATA% is
-// unavailable.
+// REASONIX_HOME, then the portable data folder beside the executable when
+// portable mode is on (see PortableModeEnabled), then uses ~/.reasonix on
+// macOS/Linux or %APPDATA%/reasonix on Windows, with a
+// %USERPROFILE%/AppData/Roaming fallback when %APPDATA% is unavailable.
 func ReasonixHomeDir() string { return reasonixHomeDir() }
 
 // RemoteStateDir is local state for the remote-SSH module (the managed
@@ -380,7 +382,7 @@ func DeliveryWorktreeDir() string {
 	if dir := cleanEnvDir("REASONIX_STATE_HOME"); dir != "" {
 		return filepath.Join(dir, "worktrees")
 	}
-	if dir := cleanEnvDir("REASONIX_HOME"); dir != "" {
+	if dir := isolatedHomeDir(); dir != "" {
 		return filepath.Join(dir, "worktrees")
 	}
 	if runtimeGOOS == "windows" {

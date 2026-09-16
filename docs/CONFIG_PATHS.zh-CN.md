@@ -19,6 +19,43 @@ Legacy 迁移、OS home 约定目录扫描以及其他 fallback 路径都会跳�
 它不会移动全局配置或 provider 凭据；这些仍然位于 `REASONIX_HOME` 下。如果旧版本曾把 provider key
 写到 `REASONIX_STATE_HOME/.env`，Reasonix 会在 `<Reasonix home>/.env` 缺少对应 key 时非破坏性导入。
 
+## 便携安装
+
+便携模式会把 Reasonix 拥有的一切（全局配置、skills、命令、hooks、会话、凭据、缓存）都放在
+程序所在目录下的同一个数据文件夹里，因此拷贝整个安装目录即可在另一台机器或 U 盘上自包含运行。
+
+| 开关 | 作用 |
+| --- | --- |
+| `reasonix config portable on` | 在可执行文件旁写入 `reasonix.portable` 标记文件 |
+| `reasonix config portable off` | 删除该标记文件 |
+| `reasonix config portable status` | 打印生效的 home、数据目录、来源和标记文件路径 |
+| `REASONIX_PORTABLE=on\|off\|auto` | 强制开启/关闭便携模式；`auto`（也是未设置时的默认值）由标记文件决定 |
+| `REASONIX_PORTABLE_DIR` | 迁移数据目录（默认 `<可执行文件目录>/reasonix-data`） |
+
+Reasonix home 的解析顺序为：`REASONIX_HOME` → 便携数据目录 → 平台默认目录。便携模式会报告一个
+非空的自包含 home，因此会跳过 legacy 迁移和 OS home 约定目录扫描，不会从系统级安装带入数据。
+
+## 主密码
+
+`reasonix secrets set` 会用主密码经 scrypt 派生的密钥，以 AES-256-GCM 加密凭据库
+（`<Reasonix home>/.env`）。文件路径不变，但内容变成自描述的 JSON 容器。
+
+| 命令 | 作用 |
+| --- | --- |
+| `reasonix secrets status [--json]` | 显示保护状态与凭据库路径 |
+| `reasonix secrets set` | 加密凭据库（交互式输入两次，或用 `--password-stdin`） |
+| `reasonix secrets change` | 更换主密码（先读当前密码，再读新密码） |
+| `reasonix secrets unlock` | 校验主密码 |
+| `reasonix secrets disable` | 解密回明文 `.env` |
+
+需要读取 provider 凭据的命令会先解锁，顺序为：终端交互提示（最多 3 次）→
+`REASONIX_MASTER_PASSWORD` → `REASONIX_MASTER_PASSWORD_FILE` 指定的文件。锁定状态下绝不会
+降级为明文：写入会直接失败（`credentials store is locked`），而不是用明文覆盖保险库；读取则
+报告凭据未设置。
+
+丢失主密码会导致已保存的凭据无法恢复，没有恢复密钥。保护范围只有凭据库：`config.toml`、
+会话等其它状态仍是明文，需要时请依赖操作系统全盘加密。
+
 ## 目录内容
 
 | 数据 | 路径 |
