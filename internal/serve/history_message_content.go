@@ -19,6 +19,7 @@ type historyToolCall struct {
 }
 
 type historyMessage struct {
+	MessageID        string                           `json:"messageId,omitempty"`
 	ServerSearch     []provider.ServerSearchCall      `json:"serverSearch,omitempty"`
 	ProtocolRecovery *provider.ProtocolRecoveryAction `json:"protocolRecovery,omitempty"`
 	Role             string                           `json:"role"`
@@ -28,6 +29,7 @@ type historyMessage struct {
 	ToolCalls        []historyToolCall                `json:"toolCalls,omitempty"`
 	ToolCallID       string                           `json:"toolCallId,omitempty"`
 	ToolName         string                           `json:"toolName,omitempty"`
+	PresentedFiles   []provider.PresentedFile         `json:"presentedFiles,omitempty"`
 }
 
 func historyMessages(msgs []provider.Message) []historyMessage {
@@ -46,7 +48,7 @@ func historyMessages(msgs []provider.Message) []historyMessage {
 				continue
 			}
 		}
-		hm := historyMessage{Role: string(m.Role), Content: historyMessageContent(m)}
+		hm := historyMessage{MessageID: m.ID, Role: string(m.Role), Content: historyMessageContent(m)}
 		if m.Role == provider.RoleAssistant {
 			hm.Reasoning = m.ReasoningContent
 			for _, search := range m.ServerSearch {
@@ -63,6 +65,9 @@ func historyMessages(msgs []provider.Message) []historyMessage {
 		if m.Role == provider.RoleTool {
 			hm.ToolCallID = m.ToolCallID
 			hm.ToolName = m.Name
+			if m.Name == "present" {
+				hm.PresentedFiles = provider.PresentedFileList(m.PresentedFiles)
+			}
 		}
 		out = append(out, hm)
 	}

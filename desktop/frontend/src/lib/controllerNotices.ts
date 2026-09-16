@@ -20,6 +20,7 @@ export function errorMessage(err: unknown): string {
 
 const noticeCodeKeys: Record<string, DictKey> = {
   final_readiness: "notice.finalReadiness",
+  historical_checks: "notice.historicalChecks",
   search_sources_not_provided: "sources.notProvided",
   empty_final: "notice.emptyFinal",
   executor_handoff: "notice.executorHandoff",
@@ -28,6 +29,9 @@ const noticeCodeKeys: Record<string, DictKey> = {
   loop_guard: "notice.loopGuard",
   workspace_lease: "notice.workspaceLease",
   cancelled_turn_display: "notice.cancelledTurnDisplay",
+  protocol_recovery: "notice.protocolRecoveryBody",
+  recovery_paused: "notice.recoveryPausedBody",
+  completion_uncertain: "notice.completionUncertainBody",
   session_recovery_forked: "recovery.noticeSavedCopy",
   session_recovery_adopted: "recovery.noticeAdopted",
   session_recovery_adopted_covered: "recovery.noticeAdoptedCovered",
@@ -48,6 +52,7 @@ const streamInterruptReasonCodeKeys: Record<string, DictKey> = {
 };
 
 export function localizedNoticeText(text: string, code?: string): string {
+  if (text === "Model reported the goal complete.") return t("notice.goalModelComplete");
   if (code === "unapplied_steer") {
     const separator = text.indexOf("\n");
     const guidance = separator >= 0 ? text.slice(separator + 1) : text;

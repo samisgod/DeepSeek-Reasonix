@@ -1,10 +1,11 @@
-import { partitionTurnItems } from "../lib/transcriptRows";
 import assert from "node:assert/strict";
 import React from "react";
 import { LocaleProvider } from "../lib/i18n";
 import { renderToStaticMarkup } from "react-dom/server";
 import { historyMessagesToItems, initialState, reducer } from "../lib/useController";
 import { NoticeCard } from "../components/TranscriptCards";
+import { createTranscriptHarness } from "./transcript-dom-harness";
+import { act } from "react";
 import { searchOutputMetadata, parseSearchSources } from "../lib/searchSources";
 import type { WireEvent } from "../lib/types";
 const ev=(s:typeof initialState,e:WireEvent)=>reducer(s,{type:"event",e});
@@ -13,6 +14,17 @@ state=ev(state,{kind:"turn_done",turnId:"one",err:"opaque rejection",protocolRec
 const action=state.items.find(i=>i.kind==="notice"&&i.action==="recover_context");
 assert(action?.kind==="notice");
 assert.equal(action.recoveryId,"token");
+const submissions: Array<{ display: string; submit?: string }> = [];
+const harness = await createTranscriptHarness();
+try {
+  await harness.render([action], { onPrompt: (display: string, submit?: string) => submissions.push({ display, submit }) });
+  await harness.settle();
+  const button = harness.container.querySelector<HTMLButtonElement>(".chat-notice button");
+  assert.ok(button, "the production chat exposes protocol recovery");
+  await act(async () => button.click());
+} finally { await harness.unmount(); await harness.close(); }
+assert.equal(submissions[0]?.submit, "/recover-context token");
+assert(!submissions[0]?.display.includes("token"), "opaque recovery token is not user-facing copy");
 assert.match(renderToStaticMarkup(<LocaleProvider><NoticeCard item={action} onAction={()=>{}} /></LocaleProvider>),/button/);
 state=ev(state,{kind:"turn_started",turnId:"two"});
 const before=state;
@@ -28,5 +40,3 @@ assert.deepEqual(parseSearchSources(output),[]);
 assert.deepEqual(searchOutputMetadata(output),{status:"not_provided",summary:"https://unverified.invalid prose"});
 assert.deepEqual(searchOutputMetadata("old text"),{});
 console.log("protocol recovery and search presentation passed");
-
-assert.equal(partitionTurnItems([action])[0]?.outsideItems[0],action);

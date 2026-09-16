@@ -39,7 +39,7 @@ func TestWriteTypeScriptEmitsContractDeclarations(t *testing.T) {
 		t.Fatalf("header = %.80q", out)
 	}
 	for _, want := range []string{
-		"export const DESKTOP_PROTOCOL_VERSION = 1;",
+		"export const DESKTOP_PROTOCOL_VERSION = 9;",
 		`export const DESKTOP_CONTRACT_DIGEST = "` + c.Digest() + `";`,
 		"export const DESKTOP_COMMANDS = [\n  \"List\",\n  \"Others\",\n  \"Reset\",\n  \"Save\",\n  \"Version\",\n] as const;",
 		"export const DESKTOP_EVENTS = [\n  \"agent:event\",\n  \"runtime:rebuilt\",\n] as const;",
@@ -84,6 +84,20 @@ func TestTypeScriptNamesDisambiguateCollisions(t *testing.T) {
 	for key, name := range want {
 		if names[key] != name {
 			t.Errorf("%s -> %q, want %q", key, names[key], name)
+		}
+	}
+}
+
+func TestTypeScriptNamesDoNotShadowGeneratedHelpers(t *testing.T) {
+	names := tsTypeNames(map[string]ObjectType{
+		"transcript.Record": {}, "main.Promise": {}, "main.GeneratedDesktopCommands": {},
+	})
+	for key, want := range map[string]string{
+		"transcript.Record": "transcript_Record", "main.Promise": "main_Promise",
+		"main.GeneratedDesktopCommands": "main_GeneratedDesktopCommands",
+	} {
+		if names[key] != want {
+			t.Errorf("%s = %s, want %s", key, names[key], want)
 		}
 	}
 }

@@ -108,6 +108,7 @@ const MemorySettingsPage = lazy(() => import("./MemoryPanel").then((module) => (
 const SubagentsSettingsPage = lazy(() => import("./SubagentsPanel").then((module) => ({ default: module.SubagentsSettingsPage })));
 const DiagnosticsSettingsPage = lazy(() => import("./DiagnosticsSettingsPage").then((module) => ({ default: module.DiagnosticsSettingsPage })));
 const StorageSettingsPage = lazy(() => import("./StorageSettingsPage").then((module) => ({ default: module.StorageSettingsPage })));
+const BrowserControlSettingsPage = lazy(() => import("./BrowserControlSettingsPage").then((module) => ({ default: module.BrowserControlSettingsPage })));
 const UsageStatsPanel = lazy(() => import("./UsageStatsPanel").then((module) => ({ default: module.UsageStatsPanel })));
 const QRCodeSVG = lazy(() => import("qrcode.react").then((module) => ({ default: module.QRCodeSVG })));
 
@@ -391,7 +392,7 @@ export function SettingsPanel({
     label: settingsTabLabel(id, t),
     meta: s ? settingsTabMeta(id, s, t) : "",
     searchTerms: id === "general" ? [
-      "settings.desktopLayoutStyle", "settings.language", "settings.currency", "settings.sessionExperience",
+      "settings.language", "settings.currency",
       "settings.closeBehavior",
       "settings.defaultToolApprovalMode", "settings.sound", "settings.statusBarStyle", "settings.statusBarItems",
       "settings.hardwareAcceleration", "GPU", "白屏", "闪烁", "渲染",
@@ -500,6 +501,7 @@ export function SettingsPanel({
                   </SettingsPageShell>
                 )}
                 {tab === "storage" && <SettingsPageShell key={tab} s={s} tab={tab} busy={false} apply={apply}><Suspense fallback={lazySettingsPageFallback}><StorageSettingsPage /></Suspense></SettingsPageShell>}
+                {tab === "browser" && <SettingsPageShell key={tab} s={s} tab={tab} busy={false} apply={apply}><Suspense fallback={lazySettingsPageFallback}><BrowserControlSettingsPage /></Suspense></SettingsPageShell>}
                 {tab === "updates" && s && (
                   <SettingsPageShell key={tab} s={s} tab={tab} busy={busy} apply={apply}>
                     <UpdatesSection
@@ -620,6 +622,7 @@ function settingsTabLabel(id: SettingsTab, t: ReturnType<typeof useT>): string {
       return t("settings.tab.sandbox");
     case "appearance": return t("settings.tab.appearance");
     case "storage": return t("settings.tab.storage");
+    case "browser": return t("settings.tab.browser");
     case "updates":
       return t("settings.tab.updates");
   }
@@ -631,7 +634,7 @@ function settingsTabMeta(id: SettingsTab, s: SettingsView, t: ReturnType<typeof 
     case "models":
       return settingsModelMeta(s, t);
     case "general":
-      return `${s.sessionExperience === "deep" ? t("settings.sessionExperience.deep") : t("settings.sessionExperience.standard")} · ${desktopLayoutStyleLabel(normalizeDesktopLayoutStyle(s.desktopLayoutStyle), t)}`;
+      return s.sessionExperience === "deep" ? t("settings.sessionExperience.deep") : t("settings.sessionExperience.standard");
     case "providers":
       return t("settings.providerCount", { n: s.providers.length });
     case "bots":
@@ -657,11 +660,12 @@ function settingsTabMeta(id: SettingsTab, s: SettingsView, t: ReturnType<typeof 
     case "network":
       return proxyModeLabel(normalizeProxyMode(s.network.proxyMode), t);
     case "permissions":
-      return permissionModeLabel(s.permissions.mode, t);
+      return "";
     case "sandbox":
-      return sandboxModeLabel(s.sandbox.bash, t);
+      return "";
     case "appearance": return t("settings.appearanceMeta");
     case "storage": return t("settings.storageMeta");
+    case "browser": return t("settings.browserMeta");
     case "updates":
       return t("settings.updatesMeta");
   }
@@ -884,8 +888,8 @@ const REASONING_PROTOCOLS: readonly string[] = ["", "deepseek", "glm", "kimi-k3"
 const THINKING_MODES: readonly string[] = ["", "enabled", "disabled", "adaptive"];
 const PROXY_TYPES = ["http", "https", "socks5", "socks5h"] as const;
 const LANGUAGE_PREFS: LangPref[] = ["", "zh", "en"];
-const TOOL_APPROVAL_MODES = ["ask", "auto", "yolo"] as const;
-const BOT_TOOL_APPROVAL_MODES = ["", "ask", "auto", "yolo"] as const;
+const TOOL_APPROVAL_MODES = ["read-only", "workspace-write", "danger-full-access"] as const;
+const BOT_TOOL_APPROVAL_MODES = ["", "read-only", "workspace-write", "danger-full-access"] as const;
 const BOT_QUEUE_MODES = ["steer", "followup", "collect", "interrupt"] as const;
 const BOT_QUEUE_DROPS = ["summarize", "old", "new"] as const;
 const BOT_ROUTE_CHAT_TYPES = ["", "dm", "group", "guild", "direct", "thread"] as const;
@@ -1121,7 +1125,7 @@ function defaultBotSettings(): BotSettingsView {
   return {
     enabled: false,
     model: "",
-    toolApprovalMode: "ask",
+    toolApprovalMode: "workspace-write",
     maxSteps: 0,
     debounceMs: 1500,
     queueMode: "steer",
@@ -1165,7 +1169,7 @@ function defaultBotSettings(): BotSettingsView {
       dingtalkAdmins: [],
       dingtalkGroups: [],
     },
-    qq: { enabled: false, appId: "", appSecretEnv: "QQ_BOT_APP_SECRET", secretSet: false, sandbox: false, model: "", toolApprovalMode: "ask", workspaceRoot: "", access: defaultBotAccess() },
+    qq: { enabled: false, appId: "", appSecretEnv: "QQ_BOT_APP_SECRET", secretSet: false, sandbox: false, model: "", toolApprovalMode: "workspace-write", workspaceRoot: "", access: defaultBotAccess() },
     feishu: {
       enabled: false,
       domain: "feishu",
@@ -1339,13 +1343,15 @@ function normalizeBotConnection(raw: any) {
   };
 }
 
-function normalizeBotToolApprovalMode(mode: unknown, allowEmpty = false): "ask" | "auto" | "yolo" | "" {
+function normalizeBotToolApprovalMode(mode: unknown, allowEmpty = false): "read-only" | "workspace-write" | "danger-full-access" | "" {
   const raw = String(mode ?? "").trim().toLowerCase();
-  if (raw === "") return allowEmpty ? "" : "ask";
-  if (raw === "ask") return "ask";
-  if (raw === "auto") return "auto";
-  if (raw === "yolo" || raw === "full" || raw === "full-access" || raw === "bypass") return "yolo";
-  return allowEmpty ? "" : "ask";
+  if (raw === "") return allowEmpty ? "" : "workspace-write";
+  if (raw === "read-only" || raw === "ask") return "read-only";
+  if (raw === "workspace-write" || raw === "auto" || raw === "yolo") return "workspace-write";
+  if (raw === "danger-full-access" || raw === "full" || raw === "full-access" || raw === "bypass") return "danger-full-access";
+  // A non-empty unknown value is an incompatible permission contract. Keep it
+  // fail-closed even for per-connection settings that otherwise allow inherit.
+  return "read-only";
 }
 
 function normalizeBotMappingScope(scope: unknown, workspaceRoot: unknown): "global" | "project" {
@@ -1514,7 +1520,6 @@ function normalizeSettingsView(view: SettingsView | null | undefined): SettingsV
     bypass: Boolean(view.autoApproveTools ?? view.bypass),
     desktopLanguage: normalizeLangPref(view.desktopLanguage),
     desktopCurrency: normalizeDesktopCurrency(view.desktopCurrency),
-    desktopLayoutStyle: normalizeDesktopLayoutStyle(view.desktopLayoutStyle),
     desktopTheme: normalizeThemePreference(view.desktopTheme),
     desktopThemeStyle: normalizeThemeStyleForTheme(view.desktopThemeStyle, normalizeThemePreference(view.desktopTheme)),
     desktopTerminalTheme: normalizeTerminalThemePreference(view.desktopTerminalTheme),
@@ -1539,17 +1544,6 @@ type CloseBehavior = "background" | "quit";
 
 function normalizeCloseBehavior(mode: string | undefined): CloseBehavior {
   return mode === "quit" ? "quit" : "background";
-}
-
-type DesktopLayoutStyle = "workbench" | "creation";
-
-// A stored "classic" predates the style's removal; those installs land on workbench.
-function normalizeDesktopLayoutStyle(style: string | undefined): DesktopLayoutStyle {
-  return style === "creation" ? "creation" : "workbench";
-}
-
-function desktopLayoutStyleLabel(style: DesktopLayoutStyle, t: ReturnType<typeof useT>): string {
-  return t(`settings.desktopLayoutStyle.${style}`);
 }
 
 type StatusBarStyle = "icon" | "text";
@@ -1592,21 +1586,6 @@ function statusBarItemLabel(id: StatusBarItemId, t: ReturnType<typeof useT>): st
 
 function closeBehaviorLabel(mode: CloseBehavior, t: ReturnType<typeof useT>): string {
   return mode === "quit" ? t("settings.closeBehavior.quit") : t("settings.closeBehavior.background");
-}
-
-function permissionModeLabel(mode: string, t: ReturnType<typeof useT>): string {
-  switch (mode) {
-    case "allow":
-      return t("settings.modeAllowShort");
-    case "deny":
-      return t("settings.modeDenyShort");
-    default:
-      return t("settings.modeAskShort");
-  }
-}
-
-function sandboxModeLabel(mode: string, t: ReturnType<typeof useT>): string {
-  return mode === "off" ? t("settings.bashOffShort") : t("settings.bashEnforceShort");
 }
 
 function providerKindLabel(kind: string, _t: ReturnType<typeof useT>): string {
@@ -1652,7 +1631,6 @@ function GeneralSection({ s, busy, apply, agentRunning }: SectionProps & { agent
   const soundPanelId = useId();
   const languagePref = normalizeLangPref(s.desktopLanguage);
   const desktopCurrency = normalizeDesktopCurrency(s.desktopCurrency);
-  const desktopLayoutStyle = normalizeDesktopLayoutStyle(s.desktopLayoutStyle);
   const [genMusicPreset, setGenMusicPreset] = useState<GenerativePreset>(getGenerativePreset());
   const [soundPref, setSoundPref] = useState<SoundWavPref>(getSuccessPreference());
   const [attentionPref, setAttentionPref] = useState<SoundWavPref>(getAttentionPreference());
@@ -1699,20 +1677,6 @@ function GeneralSection({ s, busy, apply, agentRunning }: SectionProps & { agent
   return (
     <>
       <SettingsSection title={t("settings.general.sectionAppearance")} description={t("settings.general.sectionAppearanceHint")}>
-      <SettingsField label={t("settings.desktopLayoutStyle")} hint={t("settings.desktopLayoutStyleHint")} icon={<Monitor size={18} />}>
-        <SettingsOptions layout="field" className="set-seg">
-          {(["workbench", "creation"] as const).map((style) => (
-            <button
-              key={style}
-              className={`set-seg__btn${desktopLayoutStyle === style ? " set-seg__btn--on" : ""}`}
-              disabled={busy}
-              onClick={() => void apply(() => app.SetDesktopLayoutStyle(style))}
-            >
-              {desktopLayoutStyleLabel(style, t)}
-            </button>
-          ))}
-        </SettingsOptions>
-      </SettingsField>
       <SettingsField label={t("settings.language")} hint={t("settings.languageHint")} icon={<Languages size={18} />}>
         <SettingsOptions layout="field" className="set-seg">
           {LANGUAGE_PREFS.map((pref) => (
@@ -2588,7 +2552,7 @@ function BotsSection({ s, busy, apply, initialFocus }: BotsSectionProps) {
     const env = draft.qq.appSecretEnv.trim() || DEFAULT_QQ_SECRET_ENV;
     const nextDraft = botDraftWithDerivedGatewayState({
       ...draft,
-      qq: { enabled: false, appId: "", appSecretEnv: DEFAULT_QQ_SECRET_ENV, secretSet: false, sandbox: false, model: "", toolApprovalMode: "ask", workspaceRoot: "", access: defaultBotAccess() },
+      qq: { enabled: false, appId: "", appSecretEnv: DEFAULT_QQ_SECRET_ENV, secretSet: false, sandbox: false, model: "", toolApprovalMode: "workspace-write", workspaceRoot: "", access: defaultBotAccess() },
     });
     await apply(async () => {
       await app.SetBotSettings(nextDraft);
@@ -2604,7 +2568,7 @@ function BotsSection({ s, busy, apply, initialFocus }: BotsSectionProps) {
   const selectedDiagnostic = selectedConnection ? diagnostics[selectedConnection.id] : undefined;
   const selectedDiagnosticDetail = diagnosticReportDetail(selectedDiagnostic);
   const selectedConnectionRemote = selectedConnection ? firstConnectionRemote(selectedConnection) : "";
-  const selectedConnectionToolApprovalMode = selectedConnection ? normalizeBotToolApprovalMode(selectedConnection.toolApprovalMode) : "ask";
+  const selectedConnectionToolApprovalMode = selectedConnection ? normalizeBotToolApprovalMode(selectedConnection.toolApprovalMode) : "workspace-write";
   const simpleAccessMode = draft.allowlist.allowAll ? "everyone" : "trusted";
   const connectedPlatforms = new Set<BotPlatformKey>();
   if (qqAdded) connectedPlatforms.add("qq");
@@ -6429,7 +6393,7 @@ export function ProviderEditor({
     setModelContextWindows(current => ({...current, [draft.model]:draft.contextWindow}));
     setModelOverrides(current => {
       const previous = current.find(item => item.model === draft.model);
-      return [...current.filter(item => item.model !== draft.model), {...previous, model:draft.model, reasoningProtocol:previous?.reasoningProtocol ?? "", supportedEfforts:previous?.supportedEfforts ?? [], defaultEffort:previous?.defaultEffort ?? "", vision:draft.vision, maxOutputTokens:draft.maxOutputTokens}];
+      return [...current.filter(item => item.model !== draft.model), {...previous, model:draft.model, reasoningProtocol:previous?.reasoningProtocol ?? "", supportedEfforts:draft.supportedEfforts, defaultEffort:draft.defaultEffort, vision:draft.vision, maxOutputTokens:draft.maxOutputTokens}];
     });
     setModelDialog(null);
   };
@@ -6619,7 +6583,8 @@ export function ProviderEditor({
       {fetchFallback && <div role="alert" className="provider-fetch-status provider-fetch-status--warn">{fetchFallback}</div>}
       {modelDialog !== null && <Suspense fallback={null}><ProviderModelDialog
         baseURL={effectiveRequestUrl} candidates={modelCandidateNames} contextDefault={Number(ctx) || undefined}
-        initial={modelDialog ? {model:modelDialog, contextWindow:modelContextWindows[modelDialog] ?? "", maxOutputTokens:modelOverrides.find(item=>item.model === modelDialog)?.maxOutputTokens ?? 0, vision:modelOverrides.find(item=>item.model === modelDialog)?.vision ?? null} : undefined}
+        effortOptions={(modelDialog && modelOverrides.find(item=>item.model === modelDialog)?.supportedEfforts?.length ? (modelOverrides.find(item=>item.model === modelDialog)?.supportedEfforts ?? []) : (supportedEfforts ?? [])).filter(Boolean)}
+        initial={modelDialog ? (() => { const override = modelOverrides.find(item=>item.model === modelDialog); return {model:modelDialog, contextWindow:modelContextWindows[modelDialog] ?? "", maxOutputTokens:override?.maxOutputTokens ?? 0, vision:override?.vision ?? null, supportedEfforts:override?.supportedEfforts ?? supportedEfforts, defaultEffort:override?.defaultEffort ?? ""}; })() : undefined}
         capability={modelCapabilities.find(item=>item.model === modelDialog)} busy={busy || fetchingModels}
         onClose={()=>setModelDialog(null)} onApply={applyModelDetails} onDelete={deleteModel}/></Suspense>}
       <ProviderEditorModelPicker
@@ -6665,21 +6630,6 @@ export function ProviderEditor({
 function PermissionsSection({ s, busy, apply }: SectionProps) {
   const t = useT();
   return (
-    <>
-    <SettingsSection title={t("settings.permissions")} description={t("settings.permissionsModeHint")}>
-      <SettingsField label={t("settings.writerMode")}>
-        <SettingsSelect
-          className="mem-select set-grow"
-          value={s.permissions.mode}
-          disabled={busy}
-          onValueChange={(value) => void apply(() => app.SetPermissionMode(value))}
-        >
-          <option value="ask">{t("settings.modeAsk")}</option>
-          <option value="allow">{t("settings.modeAllow")}</option>
-          <option value="deny">{t("settings.modeDeny")}</option>
-        </SettingsSelect>
-      </SettingsField>
-    </SettingsSection>
     <SettingsSection title={t("settings.permissionRules")} description={t("settings.ruleForm")}>
       <div className="set-rules-grid">
         {(["deny", "ask", "allow"] as const).map((list) => (
@@ -6694,7 +6644,6 @@ function PermissionsSection({ s, busy, apply }: SectionProps) {
         ))}
       </div>
     </SettingsSection>
-    </>
   );
 }
 
@@ -7089,15 +7038,6 @@ function SandboxSection({ s, busy, apply, windows }: SectionProps & { windows: b
       }
     >
       <ShellInterpreterFields sb={sb} windows={windows} busy={busy} setShell={(prefer) => void apply(() => app.SetShellPreference(prefer))} reloadSession={() => void reloadSession()} />
-      <SettingsField label={t("settings.bashSandbox")} hint={windows ? t("settings.bashUnavailableWindows") : undefined}>
-        {/* Windows has no OS-level Bash backend and config.BashModeForGOOS fixes
-            the effective value to off. Keep the control visibly immutable and
-            omit enforce so the UI cannot imply a dormant capability. */}
-        <SettingsSelect className="mem-select set-grow" value={windows ? "off" : sb.bash} disabled={busy || windows} onValueChange={(value) => void set({ bash: value })}>
-          {!windows && <option value="enforce">{t("settings.bashEnforce")}</option>}
-          <option value="off">{t("settings.bashOff")}</option>
-        </SettingsSelect>
-      </SettingsField>
       <SettingsField label={t("settings.allowNetwork")}>
         <label className="set-check set-check--inline">
           <input type="checkbox" checked={sb.network} disabled={busy} onChange={(e) => void set({ network: e.target.checked })} />

@@ -10,7 +10,7 @@ default_model = "deepseek"   # a provider name (→ its default model) or "provi
 [ui]
 theme = "auto"   # auto|dark|light; controls CLI colors only; REASONIX_THEME can override per run
 # theme_style = "graphite"   # graphite|aurora|slate|carbon|nocturne|amber and legacy aliases
-# shortcut_layout = "desktop"   # classic|desktop; compatibility setting; Shift+Tab toggles Plan, Ctrl+Y toggles YOLO
+# shortcut_layout = "desktop"   # classic|desktop; compatibility setting; Shift+Tab cycles read-only/workspace/YOLO/plan; Ctrl+Y toggles YOLO
 # cursor_shape = "bar"   # block|underline|bar; text input cursor shape; slim default avoids covering CJK characters
 show_turn_usage = true   # CLI/TUI: show per-request token and cost receipts in transcript scrollback
 
@@ -74,8 +74,9 @@ context_window = 1000000
 # max_output_tokens = 32768   # ordinary coding / cost control
 # max_output_tokens = 65536   # heavy reasoning / long tool loops
 # max_output_tokens = 131072  # only after repeated finish_reason=length
-# Optional per-model context budgets. Omitted models inherit context_window.
-# model_overrides = { "deepseek-v4-flash" = { context_window = 1000000 } }
+# Optional per-model budgets. Omitted models inherit context_window and
+# max_output_tokens from the provider above.
+# model_overrides = { "deepseek-v4-flash" = { context_window = 1000000, max_output_tokens = 32768 } }
 # Official list prices are frozen per provider (billing_currency). Display
 # currency ([billing].display_currency) never rewrites these tables.
 # billing_currency = "USD"   # frozen list-price currency: CNY|USD
@@ -267,6 +268,13 @@ stalled_warning_seconds = 900   # heads-up once per background job after this ma
 # account_id = "default"
 # token_env = "WEIXIN_BOT_TOKEN"
 # api_base  = "https://ilinkai.weixin.qq.com"   # Tencent iLink Bot API base URL
+
+# Rewind snapshot retention (see docs/CHECKPOINTS.md). Both are optional; omit
+# or leave at 0 to keep the built-in defaults. A protected or current turn may
+# temporarily exceed the byte budget.
+# [checkpoints]
+# retain_turns     = 100          # turns of file payloads to keep
+# blob_quota_bytes = 1073741824   # 1 GiB soft budget
 
 [serve]
 # Authentication for the HTTP serve frontend (reasonix serve).

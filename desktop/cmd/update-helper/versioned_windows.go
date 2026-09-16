@@ -6,6 +6,8 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"reasonix/internal/config"
+	"reasonix/internal/desktopinstance"
 	"strings"
 
 	"reasonix/desktop/internal/update"
@@ -19,7 +21,7 @@ import (
 //	InstallRoot/
 //	  reasonix-launcher.exe
 //	  Reasonix.exe              (launcher alias when present or portable)
-//	  reasonix-cli.exe          (CLI entry; full binary for now)
+//	  reasonix-cli.exe          (small CLI entry)
 //	  current.json
 //	  versions/<version>/
 //	    reasonix-desktop.exe
@@ -58,22 +60,37 @@ func activateVersionedWindowsFromStaging(claimed *repair.UpdateTransaction, stag
 	if err != nil {
 		return fmt.Errorf("versioned activate: %w", err)
 	}
-	rootFiles, err := stagedWindowsPayloadMembers(stagingDir, hashes, []string{"reasonix-launcher.exe", "reasonix-cli.exe"})
+	rootFiles, err := stagedWindowsPayloadMembers(stagingDir, hashes, []string{"reasonix-launcher.exe"})
 	if err != nil {
 		return fmt.Errorf("versioned activate: %w", err)
 	}
-	launcherSrc, cliSrc := rootFiles[0].Path, rootFiles[1].Path
+	launcherSrc := rootFiles[0].Path
+	cliSrc := filepath.Join(stagingDir, "reasonix-cli.exe")
+	const cliEntry = "app/resources/bin/reasonix-cli-launcher.exe"
+	if _, ok := hashes[cliEntry]; ok {
+		entry, entryErr := stagedWindowsPayloadMembers(stagingDir, hashes, []string{cliEntry})
+		if entryErr != nil {
+			return fmt.Errorf("versioned activate: %w", entryErr)
+		}
+		cliSrc = entry[0].Path
+	}
 
 	requestID := repair.UpdateTransactionID(claimed)
 	if requestID == "" {
 		requestID = "helper-" + version
 	}
+	release, err := desktopinstance.PrepareInstall(installRoot, config.ReasonixHomeDir(), false)
+	if err != nil {
+		return err
+	}
+	defer release()
 	if err := installlayout.ActivateVersion(installlayout.ActivationRequest{
-		InstallRoot:   installRoot,
-		Version:       version,
-		RequestID:     requestID,
-		Members:       members,
-		RequiredNames: versionNames,
+		InstallRoot:    installRoot,
+		Version:        version,
+		RequestID:      requestID,
+		CheckProcesses: func() error { return desktopinstance.CheckInstallVacant(installRoot, config.ReasonixHomeDir()) },
+		Members:        members,
+		RequiredNames:  versionNames,
 		RootMembers: []installlayout.Member{
 			{Name: "reasonix-launcher.exe", Path: launcherSrc, Mode: 0o700},
 			{Name: "Reasonix.exe", Path: launcherSrc, Mode: 0o700},
@@ -94,7 +111,6 @@ func activateVersionedWindowsFromStaging(claimed *repair.UpdateTransaction, stag
 		_ = os.Remove(filepath.Join(installRoot, name))
 	}
 	// Best-effort retention GC of older version trees.
-	_ = installlayout.RetainPreviousVersions(installRoot, 0)
 	_ = installlayout.CleanupStaleStaging(installRoot, 0)
 	return nil
 }

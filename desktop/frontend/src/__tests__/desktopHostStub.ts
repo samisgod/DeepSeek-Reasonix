@@ -4,10 +4,14 @@
 // host.invoke through it, and mutating the table between calls is observed
 // immediately (mirroring how the retired window.go seam behaved).
 import type { AppBindings } from "../lib/bridge";
+import { makeMockSessionReaderBindings, publishMockTranscriptEvent, setMockTranscriptMetadata } from "../lib/sessionReaderBridge";
+import type { NativePerformanceActions, ProcessDiagnosticsSnapshot } from "../lib/processDiagnostics";
 import type { DesktopBrowserHost } from "../lib/browserHost";
-import type { ReasonixDesktopHost } from "../lib/desktopHost";
+import type { BrowserControlApi, BrowserControlState, ChromeImportOutcome, ReasonixDesktopHost } from "../lib/desktopHost";
 
 export interface DesktopHostStubOptions {
+  performance?: NativePerformanceActions;
+  processDiagnostics?: () => Promise<ProcessDiagnosticsSnapshot | null>;
   /** Maps a dropped File to its native path, mirroring the preload. */
   getPathForFile?: (file: File) => string;
   /** Records native clipboard writes; clipboardWriteResult gates success. */
@@ -17,6 +21,47 @@ export interface DesktopHostStubOptions {
   clipboardReadText?: string;
   /** Records native openExternal calls. */
   externalOpens?: string[];
+  /** State the browser-control page starts from. */
+  browserControl?: BrowserControlState;
+  /** Records browser-control calls in order, e.g. "setEnabled:false". */
+  browserControlCalls?: string[];
+  /** Outcome of the Chrome sign-in-state import. */
+  chromeImportOutcome?: ChromeImportOutcome;
+}
+
+function browserControlStub(options: DesktopHostStubOptions): BrowserControlApi {
+  let state: BrowserControlState = options.browserControl ?? {
+    controlEnabled: true,
+    ignoreCertificateErrors: false,
+    writable: true,
+    warning: null,
+  };
+  const record = (call: string) => options.browserControlCalls?.push(call);
+  return {
+    get: () => Promise.resolve(state),
+    setEnabled: (enabled) => {
+      record(`setEnabled:${enabled}`);
+      state = { ...state, controlEnabled: enabled };
+      return Promise.resolve(state);
+    },
+    setIgnoreCertificateErrors: (enabled) => {
+      record(`setIgnoreCertificateErrors:${enabled}`);
+      state = { ...state, ignoreCertificateErrors: enabled };
+      return Promise.resolve(state);
+    },
+    clearCache: () => {
+      record("clearCache");
+      return Promise.resolve();
+    },
+    clearAllData: () => {
+      record("clearAllData");
+      return Promise.resolve();
+    },
+    importChromeLogin: () => {
+      record("importChromeLogin");
+      return Promise.resolve(options.chromeImportOutcome ?? { ok: true, profile: "Default", cookies: 12, skipped: 0 });
+    },
+  };
 }
 
 export interface DesktopHostStub {
@@ -32,6 +77,7 @@ export interface DesktopHostStub {
 
 export function installDesktopHostStub(commands: object, options: DesktopHostStubOptions = {}): DesktopHostStub {
   const ref = { current: commands as Record<string, unknown> };
+  const readerFallback = () => typeof ref.current.SessionOpenForTab === "function" || typeof ref.current.TranscriptSnapshotForTab === "function" ? {} : makeMockSessionReaderBindings();
   const events = new Map<string, Set<(...data: unknown[]) => void>>();
   const host: ReasonixDesktopHost = {
     kind: "electron",
@@ -40,14 +86,19 @@ export function installDesktopHostStub(commands: object, options: DesktopHostStu
       digest: "sha256:test",
       // Live view: tests mutating the command table between calls must be seen.
       get commands() {
-        return Object.keys(ref.current);
+        return [...new Set([...Object.keys(ref.current), ...Object.keys(readerFallback())])]
+          .filter((name) => typeof ref.current[name] === "function" || name in readerFallback());
       },
     },
     platform: { os: "darwin", arch: "arm64", versions: {} },
     invoke: (method, args) => {
-      const fn = ref.current[method];
+      const fn = ref.current[method] ?? (readerFallback() as Record<string, unknown>)[method];
       if (typeof fn !== "function") return Promise.reject(new Error(`unstubbed desktop command ${method}`));
-      return Promise.resolve((fn as (...a: unknown[]) => unknown)(...args));
+      return Promise.resolve((fn as (...a: unknown[]) => unknown).apply(ref.current, args)).then(result => {
+        if (method === "ListTabs" && Array.isArray(result)) for (const tab of result) setMockTranscriptMetadata(tab.id, tab);
+        if (method === "MetaForTab" && result) setMockTranscriptMetadata(String(args[0]), result);
+        return result;
+      });
     },
     on: (name, cb) => {
       let set = events.get(name);
@@ -59,6 +110,8 @@ export function installDesktopHostStub(commands: object, options: DesktopHostStu
       return () => set.delete(cb);
     },
     native: {
+      ...options.performance,
+      ...(options.processDiagnostics ? { processDiagnostics: options.processDiagnostics } : {}),
       openExternal: (url) => {
         options.externalOpens?.push(url);
         return Promise.resolve();
@@ -98,6 +151,7 @@ export function installDesktopHostStub(commands: object, options: DesktopHostStu
         setHardwareAcceleration: async (enabled: boolean) => ({ hardwareAcceleration: enabled, startupEnabled: true, override: "none" as const, restartRequired: enabled !== true, writable: true, warning: null }),
       },
       getPathForFile: options.getPathForFile ?? (() => ""),
+      browserControl: browserControlStub(options),
       onServiceState: () => () => {},
     },
     browser: undefined as unknown as DesktopBrowserHost,
@@ -110,6 +164,13 @@ export function installDesktopHostStub(commands: object, options: DesktopHostStu
     },
     events,
     emit(name, ...data) {
+      if (name === "runtime:rebuilt" && data[0] && data[1]) setMockTranscriptMetadata(String(data[0]), { runtime: { epoch: String(data[1]) } });
+      if (name === "agent:event" && data[0]) publishMockTranscriptEvent(data[0] as import("../lib/types").WireEvent);
+      const remote = /^remote-tab:(.+):event$/.exec(name);
+      if (remote && data[0]) {
+        const event = data[0] as import("../lib/types").WireEvent & { reasoning?: string };
+        publishMockTranscriptEvent({ ...event, tabId: remote[1], text: event.kind === "reasoning" ? event.reasoning ?? event.text : event.text });
+      }
       for (const cb of [...(events.get(name) ?? [])]) cb(...data);
     },
     replaceCommands(next) {

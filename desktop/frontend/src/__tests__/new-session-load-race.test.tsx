@@ -3,12 +3,14 @@
 import { JSDOM } from "jsdom";
 import React, { act } from "react";
 import { createRoot } from "react-dom/client";
-import { initialState, reducer, useController, type Item } from "../lib/useController";
+import { initialState, reducer, runtimeReadyForSubmit, useController, type Item } from "../lib/useController";
 import type { NavigationResult } from "../lib/navigationSurfaceTransition";
 import { historySliceFromMessages } from "./mockHistorySlice";
 import type { AppBindings } from "../lib/bridge";
 import type { BalanceInfo, CheckpointMeta, ContextInfo, EffortInfo, HistoryMessage, HistorySliceRequest, JobView, Meta, TabMeta, WireEvent } from "../lib/types";
 import { installDesktopHostStub } from "./desktopHostStub";
+import { meta, tabMeta } from "./helpers/sessionSwitchFixtures";
+import { resetSessionDiagnostics, sessionPipelineDiagnostics } from "../lib/sessionDiagnostics";
 
 let passed = 0;
 let failed = 0;
@@ -55,48 +57,6 @@ async function waitFor(label: string, predicate: () => boolean) {
   throw new Error(`timed out waiting for ${label}`);
 }
 
-function tabMeta(overrides: Partial<TabMeta> = {}): TabMeta {
-  return {
-    id: "tab-a",
-    scope: "project",
-    workspaceRoot: "/repo",
-    workspaceName: "repo",
-    workspacePath: "/repo",
-    gitBranch: "main",
-    topicId: "topic-a",
-    topicTitle: "General",
-    label: "model",
-    ready: true,
-    running: false,
-    mode: "normal",
-    toolApprovalMode: "ask",
-    tokenMode: "full",
-    active: true,
-    cwd: "/repo",
-    ...overrides,
-  };
-}
-
-function meta(overrides: Partial<Meta> = {}): Meta {
-  return {
-    label: "model",
-    ready: true,
-    eventChannel: "agent:event",
-    cwd: "/repo",
-    workspaceRoot: "/repo",
-    workspaceName: "repo",
-    workspacePath: "/repo",
-    gitBranch: "main",
-    autoApproveTools: false,
-    bypass: false,
-    collaborationMode: "normal",
-    toolApprovalMode: "ask",
-    tokenMode: "full",
-    goal: "",
-    goalStatus: "stopped",
-    ...overrides,
-  };
-}
 
 console.log("\nnew session load race");
 
@@ -145,6 +105,7 @@ const staleHistory = deferred<HistoryMessage[]>();
 const staleSessionMeta = deferred<Meta>();
 let newSessionCalls = 0;
 let backendCanonicalTodos = [{ content: "Old task", status: "in_progress" }];
+let backendHistory: HistoryMessage[] | undefined;
 let holdNextMeta = false;
 let staleMetaStarted = false;
 let backendRuntimeEpoch = "runtime-old";
@@ -180,14 +141,14 @@ const appStubTable = {
       EffortForTab: async () => effort,
       BalanceForTab: async () => balance,
       JobsForTab: async () => jobs,
-      CheckpointsForTab: async () => checkpoints,
+      CheckpointsForTab: async () => checkpoints, ForkTargetsForTab: async () => ({ targets: [], verifiable: false }),
       HistoryForTab: async () => staleHistory.promise,
       HistoryPageForTab: async () => {
         const messages = await staleHistory.promise;
         return { messages, startTurn: 0, endTurn: messages.filter((message) => message.role === "user").length, totalTurns: messages.filter((message) => message.role === "user").length, hasOlder: false };
       },
       HistorySliceForTab: async (tabID: string, req: HistorySliceRequest) =>
-        historySliceFromMessages(tabID, await staleHistory.promise, req),
+        historySliceFromMessages(tabID, backendHistory ?? await staleHistory.promise, req),
       HistoryCheckpointTurnsForTab: async () => [],
       ReplayPendingPrompts: async () => {},
       ReplayPendingPromptsForTab: async (tabID: string) => {
@@ -208,8 +169,10 @@ const appStubTable = {
         if (tabID !== "tab-a") throw new Error(`unexpected new-session target ${tabID}`);
         newSessionCalls += 1;
         backendCanonicalTodos = [];
+        backendHistory = [];
       },
-      ResumeSessionPageForTab: async () => {
+      ResumeTranscriptSessionForTab: async () => {
+        backendHistory = [{ role: "user", content: "restore" }, { role: "assistant", content: "done" }];
         backendCanonicalTodos = [{ content: "Restored task", status: "completed" }];
         const oldEpoch = backendRuntimeEpoch;
         backendRuntimeEpoch = "runtime-resumed";
@@ -236,7 +199,8 @@ desktopStub.emit("agent:event", {
           hasOlder: false,
         };
       },
-      OpenChannelSessionPageForTab: async () => {
+      OpenChannelTranscriptSessionForTab: async () => {
+        backendHistory = [{ role: "user", content: "channel" }, { role: "assistant", content: "waiting" }];
         const oldEpoch = backendRuntimeEpoch;
         backendRuntimeEpoch = "runtime-channel";
         backendPendingPrompt = true;
@@ -327,7 +291,7 @@ await act(async () => {
   await flushPromises();
 });
 eq(resumeSurfaceSettled, false, "Resume releases navigation acquisition before target history settles");
-eq(controller?.state.ask?.id, "pre-response-resume", "Resume accepts the new-epoch ask and rejects the interleaved old-epoch ask before returning");
+eq(controller?.state.ask?.id, undefined, "Resume waits for a consistent Follow snapshot before presenting prompts");
 await act(async () => {
   resumeRPCGate.resolve();
   await resumeNavigation?.surfaceReady;
@@ -349,7 +313,7 @@ await act(async () => {
   channelNavigation = controller?.openChannelSession("/sessions/channel.jsonl", "tab-a");
   await flushPromises();
 });
-eq(controller?.state.ask?.id, "pre-response-channel", "channel-open accepts the new-epoch ask and rejects the interleaved old-epoch ask before returning");
+eq(controller?.state.ask?.id, undefined, "channel-open waits for a consistent Follow snapshot before presenting prompts");
 await act(async () => {
   channelRPCGate.resolve();
   await channelNavigation?.surfaceReady;
@@ -393,7 +357,7 @@ desktopStub.replaceCommands({
   EffortForTab: async () => effort,
   BalanceForTab: async () => balance,
   JobsForTab: async () => jobs,
-  CheckpointsForTab: async () => checkpoints,
+  CheckpointsForTab: async () => checkpoints, ForkTargetsForTab: async () => ({ targets: [], verifiable: false }),
   HistoryPageForTab: async () => {
     reusedHistoryCalls.push("history");
     return reusedHistoryCalls.length === 1 ? reusedOldHistory.promise : reusedEmptyPage;
@@ -452,7 +416,7 @@ desktopStub.replaceCommands({
   EffortForTab: async () => effort,
   BalanceForTab: async () => balance,
   JobsForTab: async () => jobs,
-  CheckpointsForTab: async () => checkpoints,
+  CheckpointsForTab: async () => checkpoints, ForkTargetsForTab: async () => ({ targets: [], verifiable: false }),
   HistoryPageForTab: async (tabID: string) => {
     raceHistoryCalls.push(tabID);
     return reusedEmptyPage;
@@ -527,7 +491,7 @@ desktopStub.replaceCommands({
   EffortForTab: async () => effort,
   BalanceForTab: async () => balance,
   JobsForTab: async () => jobs,
-  CheckpointsForTab: async () => checkpoints,
+  CheckpointsForTab: async () => checkpoints, ForkTargetsForTab: async () => ({ targets: [], verifiable: false }),
   HistoryForTab: async () => [],
   HistoryPageForTab: async () => ({ messages: [], startTurn: 0, endTurn: 0, totalTurns: 0, hasOlder: false }),
   HistoryCheckpointTurnsForTab: async () => [],
@@ -584,6 +548,252 @@ eq(controller?.state.meta?.workspaceRoot, targetProjectB, "guarded startup sync 
 await act(async () => {
   guardRoot.unmount();
 });
+
+// Exercise the production hook's modern entry points: none may install an
+// independently fetched legacy prefix or leave the new runtime paused forever.
+let modernEpoch = "modern-start";
+let modernPath = "/sessions/modern-start.jsonl";
+let modernSnapshots = 0;
+let legacyReads = 0;
+let modernAdoptions = 0;
+const slowModernGate = deferred<void>();
+const modernPhases = { resolveMs: 1, loadMs: 2, rebindMs: 3, historyMs: 0, totalMs: 6, loadedMessages: 2, loadedBytes: 100, historyEntries: 0, durableReads: 1, outcome: "ok" };
+const modernReplace = (name: string) => {
+  modernEpoch = name;
+  modernPath = `/sessions/${name}.jsonl`;
+  desktopStub.emit("runtime:rebuilt", "tab-a", modernEpoch);
+};
+const legacyRead = async () => { legacyReads++; throw new Error("modern hydration read legacy history"); };
+desktopStub.replaceCommands({
+  RegisterNavigationIntent: async () => {},
+  ListTabs: async () => [tabMeta({ runtime: { phase: "ready", epoch: modernEpoch } })],
+  MetaForTab: async () => meta({ sessionPath: modernPath, runtime: { phase: "ready", epoch: modernEpoch } }),
+  ContextUsageForTab: async () => context,
+  EffortForTab: async () => effort,
+  BalanceForTab: async () => balance,
+  JobsForTab: async () => jobs,
+  CheckpointsForTab: async () => checkpoints, ForkTargetsForTab: async () => ({ targets: [], verifiable: false }),
+  HistoryCheckpointTurnsForTab: async () => [],
+  HistoryForTab: legacyRead, HistoryPageForTab: legacyRead, HistorySliceForTab: legacyRead,
+  ResumeSessionPageForTab: legacyRead, OpenChannelSessionPageForTab: legacyRead,
+  ReplayPendingPrompts: async () => {},
+  ReplayPendingPromptsForTab: async () => {},
+  SessionHistoryWindowForTab: async () => {
+    modernSnapshots++;
+    return { status: "ready", snapshotSequence: 0, coverageSequence: 0, generation: modernEpoch, messages: [], totalTurns: 0, hasOlder: false, hasNewer: false };
+  },
+  NewSessionForTab: async () => modernReplace("modern-new"),
+  ClearSessionForTab: async () => { modernReplace("modern-clear"); return { sessionPath: modernPath, sessionGeneration: 2 }; },
+  ResumeTranscriptSessionForTab: async (_tab: string, path: string) => {
+    modernAdoptions++; modernReplace(path.includes("slow") ? "modern-slow" : "modern-resume");
+    if (path.includes("slow")) await slowModernGate.promise;
+    return { ...modernPhases, totalMs: path.includes("slow") ? 500 : modernPhases.totalMs };
+  },
+  OpenChannelTranscriptSessionForTab: async () => { modernAdoptions++; modernReplace("modern-channel"); return modernPhases; },
+} as Partial<AppBindings>);
+controller = undefined;
+const modernRoot = createRoot(rootEl);
+await act(async () => { modernRoot.render(<Probe />); await flushPromises(); });
+await waitFor("modern startup snapshot", () => controller?.state.transcriptProtocol === 2);
+const verifyModernSuffix = async (label: string) => {
+  await act(async () => {
+    desktopStub.emit("agent:event", { kind: "user_message", tabId: "tab-a", runtimeEpoch: modernEpoch,
+      sessionId: modernEpoch, seq: 1, messageId: `${modernEpoch}-user`, text: label });
+    desktopStub.emit("agent:event", { kind: "text", tabId: "tab-a", runtimeEpoch: modernEpoch,
+      sessionId: modernEpoch, seq: 2, messageId: `${modernEpoch}-assistant`, text: "suffix" });
+    await flushPromises();
+  });
+  eq(controller?.state.items.filter((item) => item.kind === "user").length, 1, `${label} accepts one user after its snapshot`);
+  eq(controller?.state.live?.text, "suffix", `${label} accepts the ordered live suffix`);
+};
+await verifyModernSuffix("startup");
+await act(async () => { await controller?.newSession(); await flushPromises(); });
+eq(controller?.state.items.length, 0, "modern new session installs its empty cut");
+await verifyModernSuffix("new");
+await act(async () => { await controller?.clearSession(); await flushPromises(); });
+eq(controller?.state.items.length, 0, "modern clear installs its empty cut");
+await verifyModernSuffix("clear");
+await act(async () => { await controller?.resumeSession("/sessions/modern-resume.jsonl", "tab-a")?.surfaceReady; await flushPromises(); });
+eq(sessionPipelineDiagnostics().resumeHistory?.source, "transcript-v2", "modern resume records snapshot installation");
+eq(sessionPipelineDiagnostics().duplicateLoadCount, 0, "modern resume receives backend load evidence");
+ok(typeof sessionPipelineDiagnostics().resumeSnapshotMs === "number", "modern resume measures snapshot time separately");
+await verifyModernSuffix("resume");
+await act(async () => { await controller?.openChannelSession("/sessions/modern-channel.jsonl", "tab-a")?.surfaceReady; await flushPromises(); });
+eq(sessionPipelineDiagnostics().resumeHistory?.source, "transcript-v2", "modern channel records snapshot installation");
+await verifyModernSuffix("channel");
+eq(modernAdoptions, 2, "resume and channel use adoption without a legacy history payload");
+eq(modernSnapshots, 5, "each modern entry point obtains one authoritative cut");
+eq(legacyReads, 0, "modern entry points never read legacy history");
+let staleModern: NavigationResult<void> | undefined;
+await act(async () => {
+  staleModern = controller?.resumeSession("/sessions/slow.jsonl", "tab-a");
+  await flushPromises();
+});
+eq(sessionPipelineDiagnostics().duplicateLoadCount, null, "pending switch does not reuse previous evidence");
+await act(async () => { await controller?.resumeSession("/sessions/fast.jsonl", "tab-a")?.surfaceReady; await flushPromises(); });
+await act(async () => { slowModernGate.resolve(); await staleModern?.surfaceReady; await flushPromises(); });
+eq(sessionPipelineDiagnostics().resumeSwitch?.totalMs, modernPhases.totalMs, "stale modern adoption cannot overwrite committed diagnostics");
+eq(sessionPipelineDiagnostics().resumeHistory?.source, "transcript-v2", "modern race retains authoritative snapshot evidence");
+
+desktopStub.commands.TranscriptFollowForTab = async () => { throw new Error("configured model is unavailable before controller startup"); };
+desktopStub.commands.HistorySliceForTab = async (tabID: string, req: HistorySliceRequest) => { legacyReads++; return historySliceFromMessages(tabID, [{ role: "user", content: "recovered without controller" }], req); };
+await act(async () => {
+  await controller?.retrySessionHistory("tab-a");
+  await flushPromises();
+});
+ok(!(controller?.state.items.some((item) => item.kind === "user" && item.text === "recovered without controller") ?? false),
+  "failed Follow never falls back to a different protocol");
+eq(legacyReads, 0, "snapshot failure performs no compatibility history read");
+ok(Boolean(controller?.state.hydrateError), "failed synchronization remains visible");
+await act(async () => { modernRoot.unmount(); });
+// ── session switch: one history commit, composer bound to the new runtime ────
+// The switch shows the restored transcript as soon as its page lands, but the
+// tab is only submittable once the runtime reconcile confirms which session the
+// controller now owns. A superseded switch must not paint over the newer one.
+const switchMetaGate = deferred<Meta>();
+const slowSwitchGate = deferred<void>();
+let switchMetaHeld = false;
+let switchMetaPath = "/sessions/one.jsonl";
+let switchResumeCalls = 0;
+let switchHistoryPageCalls = 0;
+const switchTab = tabMeta({ id: "tab-switch", sessionPath: "/sessions/one.jsonl" });
+const switchPage = (text: string, durableReads = 1) => ({
+  messages: [{ role: "user", content: text } as HistoryMessage],
+  startTurn: 0,
+  endTurn: 1,
+  totalTurns: 1,
+  hasOlder: false,
+  switch: {
+    resolveMs: 0, loadMs: 1, rebindMs: 2, historyMs: 1, totalMs: 4,
+    loadedMessages: 1, loadedBytes: 64, historyEntries: 1, durableReads, outcome: "ok",
+  },
+});
+desktopStub.replaceCommands({
+  RegisterNavigationIntent: async () => {},
+  ListTabs: async () => [switchTab],
+  SessionOpenForTab: undefined, // Exercise the older host's resume-page contract.
+  MetaForTab: async () => {
+    if (switchMetaHeld) return switchMetaGate.promise;
+    return meta({ sessionPath: switchMetaPath });
+  },
+  ContextUsageForTab: async () => context,
+  EffortForTab: async () => effort,
+  BalanceForTab: async () => balance,
+  JobsForTab: async () => jobs,
+  CheckpointsForTab: async () => checkpoints, ForkTargetsForTab: async () => ({ targets: [], verifiable: false }),
+  HistoryPageForTab: async () => {
+    switchHistoryPageCalls += 1;
+    return switchPage("full-history-refetch");
+  },
+  HistorySliceForTab: async (tabID: string, req: HistorySliceRequest) => historySliceFromMessages(tabID, switchMetaPath ? [{ role: "user", content: switchMetaPath }] : [], req),
+  HistoryCheckpointTurnsForTab: async () => [],
+  ReplayPendingPrompts: async () => {},
+  ReplayPendingPromptsForTab: async () => {},
+  ResumeTranscriptSessionForTab: async (_tabID: string, path: string) => {
+    switchResumeCalls += 1;
+    if (path.includes("slow")) await slowSwitchGate.promise;
+    switchMetaPath = path;
+    const page = switchPage(path);
+    page.switch.totalMs = path.includes("slow") ? 500 : 4;
+    return page.switch;
+  },
+});
+
+resetSessionDiagnostics();
+const switchRoot = createRoot(document.createElement("div"));
+await act(async () => {
+  switchRoot.render(<Probe />);
+  await flushPromises();
+});
+await waitFor("switch tab active", () => controller?.activeTabId === "tab-switch");
+
+switchMetaHeld = true;
+let switchNav: NavigationResult<void> | undefined;
+await act(async () => {
+  switchNav = controller?.resumeSession("/sessions/two.jsonl", "tab-switch");
+  await flushPromises();
+});
+await waitFor("switched transcript", () => (controller?.state.items.length ?? 0) > 0);
+eq(controller?.state.items[0]?.text, "/sessions/two.jsonl", "switch commits the restored transcript before ancillary work finishes");
+eq(runtimeReadyForSubmit(controller?.state.meta), false, "composer stays disabled until the switched runtime is reconciled");
+
+await act(async () => {
+  switchMetaHeld = false;
+  switchMetaPath = "/sessions/two.jsonl";
+  switchMetaGate.resolve(meta({ sessionPath: switchMetaPath }));
+  await switchNav?.surfaceReady;
+  await flushPromises();
+});
+eq(runtimeReadyForSubmit(controller?.state.meta), true, "composer re-enables once the switched runtime is reconciled");
+eq(switchResumeCalls, 1, "a switch issues exactly one resume page request");
+eq(switchHistoryPageCalls, 0, "a switch does not refetch the full history page from the frontend");
+eq(sessionPipelineDiagnostics().duplicateLoadCount, 0, "switch reports no duplicate durable load");
+eq(sessionPipelineDiagnostics().resumeHistory?.source, "transcript-v2", "the switch's first screen is attributed to Follow");
+
+let slowNav: NavigationResult<void> | undefined;
+let fastNav: NavigationResult<void> | undefined;
+await act(async () => {
+  slowNav = controller?.resumeSession("/sessions/slow.jsonl", "tab-switch");
+  await flushPromises();
+});
+await act(async () => {
+  fastNav = controller?.resumeSession("/sessions/fast.jsonl", "tab-switch");
+  await fastNav?.surfaceReady;
+  await flushPromises();
+});
+await act(async () => {
+  slowSwitchGate.resolve();
+  await slowNav?.surfaceReady;
+  await flushPromises();
+});
+eq(controller?.state.items[0]?.text, "/sessions/fast.jsonl", "a superseded switch cannot paint over the newer transcript");
+eq(sessionPipelineDiagnostics().resumeSwitch?.totalMs, 4, "superseded response cannot overwrite current switch diagnostics");
+
+await act(async () => {
+  switchRoot.unmount();
+});
+// Navigation admission: an old MetaForTab completion races the new ready=false.
+{
+  const oldMeta = deferred<Meta>();
+  const navigationGate = deferred<void>();
+  let holdMeta = false;
+  let holdNavigation = false;
+  let path = "/sessions/source.jsonl";
+  const submissions: string[] = [];
+  desktopStub.replaceCommands({
+    RegisterNavigationIntent: async () => { if (holdNavigation) await navigationGate.promise; },
+    ListTabs: async () => [tabMeta({ id: "meta-race", sessionPath: path })],
+    SessionOpenForTab: undefined,
+    MetaForTab: async () => holdMeta ? oldMeta.promise : meta({ sessionPath: path }),
+    ContextUsageForTab: async () => context, EffortForTab: async () => effort,
+    BalanceForTab: async () => balance, JobsForTab: async () => jobs,
+    CheckpointsForTab: async () => checkpoints, HistoryCheckpointTurnsForTab: async () => [], ForkTargetsForTab: async () => ({ targets: [], verifiable: false }),
+    HistorySliceForTab: async (id: string, req: HistorySliceRequest) => historySliceFromMessages(id, [], req),
+    ReplayPendingPrompts: async () => {}, ReplayPendingPromptsForTab: async () => {},
+    ResumeTranscriptSessionForTab: async (_id: string, target: string) => { path = target; return switchPage(target).switch; },
+    StartTurnForTab: async () => { submissions.push(path); return { turnId: "wrong-source" }; },
+  });
+  const raceRoot = createRoot(document.createElement("div"));
+  await act(async () => { raceRoot.render(<Probe />); await flushPromises(); });
+  await waitFor("meta race active", () => controller?.activeTabId === "meta-race" && runtimeReadyForSubmit(controller?.state.meta));
+  holdMeta = true;
+  let oldRefresh: Promise<void> | undefined;
+  await act(async () => { oldRefresh = controller?.refreshMeta(); await flushPromises(); });
+  holdNavigation = true;
+  let navigation: NavigationResult<void> | undefined;
+  await act(async () => { navigation = controller?.resumeSession("/sessions/target.jsonl", "meta-race"); await flushPromises(); });
+  eq(runtimeReadyForSubmit(controller?.state.meta), false, "switch initially closes admission");
+  await act(async () => {
+    holdMeta = false;
+    oldMeta.resolve(meta({ sessionPath: "/sessions/source.jsonl" }));
+    await oldRefresh;
+    await flushPromises();
+  });
+  eq(runtimeReadyForSubmit(controller?.state.meta), false, "old metadata must not reopen admission during navigation registration");
+  await act(async () => { await controller?.sendToTab("meta-race", "raced submission").catch(() => {}); await flushPromises(); });
+  eq(submissions.length, 0, "pending switch must not send into its source controller");
+  await act(async () => { holdNavigation = false; navigationGate.resolve(); await navigation?.surfaceReady; await flushPromises(); raceRoot.unmount(); });
+}
 dom.window.close();
 
 console.log(`\n${passed} passed, ${failed} failed, ${passed + failed} total`);

@@ -7,12 +7,13 @@ import (
 )
 
 func TestClassifySubmitRouteSeparatesManagementFromTurns(t *testing.T) {
-	c := New(Options{Commands: []command.Command{{Name: "review", Body: "review: $ARGUMENTS"}}})
+	c := newOwnedTestController(t, Options{Commands: []command.Command{{Name: "review", Body: "review: $ARGUMENTS"}}})
 	tests := []struct {
 		input string
 		want  SubmitDisposition
 	}{
 		{input: "/compact", want: SubmitManagementHandled},
+		{input: "/compact keep the test plan", want: SubmitManagementHandled},
 		{input: "/new", want: SubmitManagementHandled},
 		{input: "/context", want: SubmitManagementHandled},
 		{input: "/model", want: SubmitManagementHandled},
@@ -42,7 +43,7 @@ func TestClassifySubmitRouteSeparatesManagementFromTurns(t *testing.T) {
 }
 
 func TestManagementNoticeLeavesTurnOwnedCommandsUnclaimed(t *testing.T) {
-	c := New(Options{Commands: []command.Command{{Name: "review", Body: "review: $ARGUMENTS"}}})
+	c := newOwnedTestController(t, Options{Commands: []command.Command{{Name: "review", Body: "review: $ARGUMENTS"}}})
 	for _, input := range []string{"/unknown", "/review inspect", "/compactly"} {
 		if c.managementNotice(input) {
 			t.Fatalf("managementNotice(%q) claimed a turn-owned command", input)

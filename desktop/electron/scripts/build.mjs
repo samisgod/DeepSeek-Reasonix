@@ -15,11 +15,14 @@ const common = {
   format: "cjs",
   target: "node22",
   external: ["electron"],
-  sourcemap: true,
+  sourcemap: "external",
+  minify: true,
+  keepNames: true,
   logLevel: "info",
 };
 
 await build({ ...common, entryPoints: [resolve(root, "src/main/index.ts")], outfile: resolve(dist, "main.cjs") });
+await build({ ...common, entryPoints: [resolve(root, "src/main/profileAnalysisWorker.ts")], outfile: resolve(dist, "profile-analysis.cjs") });
 await build({ ...common, entryPoints: [resolve(root, "src/preload/index.ts")], outfile: resolve(dist, "preload.cjs") });
 // The website-view preload: sandboxed, so it bundles nothing but the channel name.
 await build({ ...common, entryPoints: [resolve(root, "src/main/browser/guestPreload.ts")], outfile: resolve(dist, "guest-preload.cjs") });

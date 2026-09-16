@@ -71,6 +71,15 @@ func sanitizeRemoteHistory(body []byte) []byte {
 // RemoteTabSnapshot merges the serve's GET members in parallel. Only
 // /history is required; the optional members degrade to absent on failure.
 func (a *App) RemoteTabSnapshot(tabID string) (RemoteTabSnapshot, error) {
+	return a.remoteTabSnapshot(tabID, true)
+}
+
+// RemoteTabMetadata loads ancillary state without transferring transcript bodies.
+func (a *App) RemoteTabMetadata(tabID string) (RemoteTabSnapshot, error) {
+	return a.remoteTabSnapshot(tabID, false)
+}
+
+func (a *App) remoteTabSnapshot(tabID string, includeHistory bool) (RemoteTabSnapshot, error) {
 	client, base, err := a.remoteTabCommandClient(tabID)
 	if err != nil {
 		return RemoteTabSnapshot{}, err
@@ -100,6 +109,9 @@ func (a *App) RemoteTabSnapshot(tabID string) (RemoteTabSnapshot, error) {
 		"/commands":    &snap.Commands,
 		"/status":      &snap.Status,
 	} {
+		if path == "/history" && !includeHistory {
+			continue
+		}
 		wg.Add(1)
 		go func(path string, dst *json.RawMessage) {
 			defer wg.Done()
@@ -123,7 +135,7 @@ func (a *App) RemoteTabSnapshot(tabID string) (RemoteTabSnapshot, error) {
 	if historyErr != nil {
 		return RemoteTabSnapshot{}, historyErr
 	}
-	if len(snap.History) == 0 {
+	if includeHistory && len(snap.History) == 0 {
 		return RemoteTabSnapshot{}, fmt.Errorf("remote tab %q: empty history", tabID)
 	}
 	snap.History = sanitizeRemoteHistory(snap.History)
@@ -213,6 +225,7 @@ type remoteTabStatusPayload struct {
 	RuntimeState    *event.RuntimeStateSnapshot `json:"runtimeState"`
 	SessionName     string                      `json:"sessionName"`
 	SessionPath     string                      `json:"sessionPath"`
+	SessionID       string                      `json:"sessionId"`
 	Running         *bool                       `json:"running"`
 	PendingPrompt   *bool                       `json:"pendingPrompt"`
 	BackgroundJobs  *int                        `json:"backgroundJobs"`
@@ -252,18 +265,19 @@ func (a *App) recordRemoteTabSessionStatus(tabID string, client *http.Client, ge
 	// Serve still reports the outgoing foreground until an in-flight /resume
 	// commits. That status is older than the provisional route and must not roll
 	// it back; target SSE frames are already buffering behind its ready barrier.
-	if pendingPath := tab.routing.rehydratingPath; pendingPath != "" && payload.SessionPath != "" && payload.SessionPath != pendingPath {
+	payloadRoute := remoteSessionIdentityRoute(payload.SessionPath, payload.SessionID)
+	if pendingPath := tab.routing.rehydratingPath; pendingPath != "" && payloadRoute != "" && payloadRoute != pendingPath {
 		a.remoteTabMu.Unlock()
 		return false
 	}
 	// A spectator watches the session it explicitly selected; the foreground
 	// status of a different session must not re-route its tab.
-	if payload.SessionPath != "" && payload.SessionPath != tab.routing.currentPath && tab.session.takenOver {
+	if payloadRoute != "" && payloadRoute != tab.routing.currentPath && tab.session.takenOver {
 		a.remoteTabMu.Unlock()
 		return false
 	}
 	before := remoteTabMetaLocked(tab)
-	pathChanged := adoptRemoteTabSessionPathLocked(tab, payload.SessionPath)
+	pathChanged := adoptRemoteTabSessionPathLocked(tab, payloadRoute)
 	if pathChanged {
 		tab.topicTitle = remoteWorkspaceName(tab.ref.Workspace)
 	}
@@ -289,8 +303,9 @@ func (a *App) recordRemoteTabSessionStatus(tabID string, client *http.Client, ge
 }
 
 func applyRemoteTabStatusPayload(tab *remoteTab, payload remoteTabStatusPayload) {
+	payloadRoute := remoteSessionIdentityRoute(payload.SessionPath, payload.SessionID)
 	if payload.RuntimeState != nil && validRuntimeState(*payload.RuntimeState) {
-		acceptRemoteRuntimeStateLocked(tab, payload.SessionPath, *payload.RuntimeState, true)
+		acceptRemoteRuntimeStateLocked(tab, payloadRoute, *payload.RuntimeState, true)
 		payload.Running, payload.PendingPrompt, payload.BackgroundJobs, payload.CancelRequested, payload.Cancellable = nil, nil, nil, nil, nil
 	} else if payload.RuntimeState == nil && payload.Running != nil {
 		// An actual legacy status confirms only its selected session. Never

@@ -14,6 +14,7 @@ export interface RemoteProjectBindings {
   DeleteRemoteProjectSession(hostId: string, workspace: string, name: string): Promise<void>;
   CloseRemoteTab(tabId: string): Promise<void>;
   SubmitRemoteTab(tabId: string, text: string): Promise<void>;
+	SubmitRemoteTabWithSubmission?(tabId: string, text: string, submissionId: string): Promise<void>;
   ClearRemoteTabSession(tabId: string): Promise<void>;
   CancelRemoteTab(tabId: string): Promise<void>;
   ReclaimRemoteTabSession(tabId: string): Promise<void>;
@@ -26,7 +27,9 @@ export interface RemoteProjectBindings {
   SetRemoteTabComposerProfile(tabId: string, collaborationMode: string, toolApprovalMode: string, goal: string): Promise<string[]>;
   SetRemoteTabToolApprovalMode(tabId: string, mode: string): Promise<void>;
   SetRemoteTabGoal(tabId: string, goal: string): Promise<void>;
+  EditRemoteTabGoal(tabId: string, objective: string, maxGoalRounds: number | null): Promise<void>;
   RemoteTabSnapshot(tabId: string): Promise<RemoteTabSnapshot>;
+  RemoteTabMetadata?(tabId: string): Promise<RemoteTabSnapshot>;
   RemoteTabStatus(tabId: string): Promise<unknown>;
   SetRemoteTabEffort(tabId: string, level: string): Promise<void>;
   SetRemoteTabQualityFloor(tabId: string, floor: string): Promise<void>;
@@ -38,6 +41,8 @@ export interface RemoteProjectBindings {
   CompactRemoteTab(tabId: string, instructions: string): Promise<void>;
   ReplayRemoteTabPrompts(tabId: string): Promise<unknown>;
   ForkRemoteTab(tabId: string, turn: number, name: string): Promise<void>;
+  ForkTargetsRemoteTab(tabId: string): Promise<import("../generated/desktopContract.generated").ForkTargetSetView>;
+  CreateForkRemoteTab(tabId: string, anchor: import("../generated/desktopContract.generated").ForkAnchorView): Promise<import("../generated/desktopContract.generated").ForkCreationView>;
   SummarizeRemoteTab(tabId: string, turn: number, mode: string): Promise<void>;
   ForgetRemoteTab(tabId: string, name: string): Promise<void>;
   RemoteTabBranches(tabId: string): Promise<unknown>;

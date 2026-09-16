@@ -62,6 +62,7 @@ type Envelope struct {
 	TranscriptRevision int64            `json:"transcriptRevision,omitempty"`
 	TranscriptDigest   string           `json:"transcriptDigest,omitempty"`
 	HeadID             string           `json:"headId,omitempty"`
+	RewriteEpoch       uint64           `json:"rewriteEpoch,omitempty"`
 	LeafMessageID      string           `json:"leafMessageId,omitempty"`
 	CreatedAt          int64            `json:"createdAt"`
 	Event              eventwire.Event  `json:"event"`
@@ -122,18 +123,21 @@ type projectionAckRecord struct {
 }
 
 type checkpointRecord struct {
-	SchemaVersion              int               `json:"schemaVersion"`
-	RecordType                 string            `json:"recordType"`
-	SessionID                  string            `json:"sessionId"`
-	CompactedThroughSequence   uint64            `json:"compactedThroughSeq"`
-	ProjectionCommittedThrough uint64            `json:"projectionCommittedThroughSeq"`
-	LastTurnID                 string            `json:"lastTurnId,omitempty"`
-	LastStatus                 event.TurnStatus  `json:"lastStatus,omitempty"`
-	TranscriptRevision         int64             `json:"transcriptRevision,omitempty"`
-	TranscriptDigest           string            `json:"transcriptDigest,omitempty"`
-	HeadID                     string            `json:"headId,omitempty"`
-	LeafMessageID              string            `json:"leafMessageId,omitempty"`
-	TerminalSummaries          []TerminalSummary `json:"terminalSummaries"`
+	SchemaVersion              int                   `json:"schemaVersion"`
+	RecordType                 string                `json:"recordType"`
+	SessionID                  string                `json:"sessionId"`
+	CompactedThroughSequence   uint64                `json:"compactedThroughSeq"`
+	ProjectionCommittedThrough uint64                `json:"projectionCommittedThroughSeq"`
+	LastTurnID                 string                `json:"lastTurnId,omitempty"`
+	LastStatus                 event.TurnStatus      `json:"lastStatus,omitempty"`
+	TranscriptRevision         int64                 `json:"transcriptRevision,omitempty"`
+	TranscriptDigest           string                `json:"transcriptDigest,omitempty"`
+	HeadID                     string                `json:"headId,omitempty"`
+	LeafMessageID              string                `json:"leafMessageId,omitempty"`
+	TerminalSummaries          []TerminalSummary     `json:"terminalSummaries"`
+	Todos                      []event.Todo          `json:"todos"`
+	TodoWritten                bool                  `json:"todoWritten"`
+	Recovery                   *event.RecoveryStatus `json:"recovery,omitempty"`
 }
 
 type routingMetadata struct {
@@ -143,30 +147,6 @@ type routingMetadata struct {
 
 // MetricsSnapshot contains counters only; no event content, ids or paths leave
 // the ledger through this surface.
-type MetricsSnapshot struct {
-	RawEvents             uint64
-	StreamRecords         uint64
-	BytesWritten          uint64
-	ReplayEvents          uint64
-	ReplayBytes           uint64
-	ReplayResets          uint64
-	Compactions           uint64
-	CompactionFailures    uint64
-	BytesBeforeCompact    uint64
-	BytesAfterCompact     uint64
-	TornTails             uint64
-	WriteFailures         uint64
-	ProjectionRetries     uint64
-	OpenCount             uint64
-	SyncCount             uint64
-	CloseCount            uint64
-	AppendLatencyBuckets  [5]uint64
-	ReplayLatencyBuckets  [5]uint64
-	CompactLatencyBuckets [5]uint64
-	FileSizeBytes         int64
-	UnconfirmedTurns      int
-}
-
 // Ledger serializes sequence allocation, file I/O, projection acknowledgement
 // and checkpoint replacement for exactly one session actor lane.
 type Ledger struct {
@@ -175,15 +155,14 @@ type Ledger struct {
 	damaged   string
 	sessionID string
 
-	nextSeq      uint64
-	turnStartSeq uint64
-	turnStarted  int64
-	active       string
-	status       event.TurnStatus
-	terminal     bool
-	routing      routingMetadata
-	nextRouting  routingMetadata
-	transcript   transcriptSnapshot
+	nextSeq uint64
+	ledgerTurnState
+	routing     routingMetadata
+	nextRouting routingMetadata
+	transcript  transcriptSnapshot
+	todos       []event.Todo
+	todoWritten bool
+	recovery    *event.RecoveryStatus
 
 	submissionTurns            map[string]string
 	records                    []Envelope
@@ -203,6 +182,31 @@ type Ledger struct {
 	metrics       MetricsSnapshot
 }
 
+type ledgerTurnState struct {
+	turnStartSeq uint64
+	turnStarted  int64
+	active       string
+	status       event.TurnStatus
+	terminal     bool
+}
+
+// NewMemory creates the compatibility runtime projection used by execution-v2.
+// It allocates turn identities and retains reconnect envelopes for the lifetime
+// of the process, but never opens or writes a sidecar. Durable business facts
+// belong to session; this ledger adapts the existing event.Sink surface while
+// clients move to SessionQuery.
+func NewMemory(sessionID string) *Ledger {
+	return &Ledger{
+		sessionID:       sessionID,
+		nextSeq:         1,
+		writeVersion:    schemaVersion,
+		submissionTurns: make(map[string]string),
+		projectionAcks:  make(map[string]uint64),
+		compactBytes:    defaultCompactBytes,
+		compactEvents:   defaultCompactEvents,
+	}
+}
+
 type parsedLedger struct {
 	records             []Envelope
 	summaries           []TerminalSummary
@@ -210,6 +214,9 @@ type parsedLedger struct {
 	compactedThrough    uint64
 	projectionCommitted uint64
 	checkpoint          transcriptSnapshot
+	todos               []event.Todo
+	todoWritten         bool
+	recovery            *event.RecoveryStatus
 	fileSize            int64
 	sawV1               bool
 }
@@ -236,6 +243,9 @@ func Open(sessionPath, sessionID string) (*Ledger, error) {
 	l.compactedThrough = parsed.compactedThrough
 	l.projectionCommittedThrough = parsed.projectionCommitted
 	l.transcript = parsed.checkpoint
+	l.todos = append([]event.Todo(nil), parsed.todos...)
+	l.todoWritten = parsed.todoWritten
+	l.recovery = cloneRecoveryStatus(parsed.recovery)
 	l.fileSize = parsed.fileSize
 
 	pendingTools := make(map[string]eventwire.Tool)
@@ -270,6 +280,18 @@ func Open(sessionPath, sessionID string) (*Ledger, error) {
 			case "tool_result":
 				delete(pendingTools, rec.Event.Tool.ID)
 			}
+		}
+		if rec.Kind == "turn_started" {
+			l.todos = nil
+			l.todoWritten = false
+			l.recovery = nil
+		}
+		if rec.Kind == "tool_result" && rec.Event.Tool != nil && rec.Event.Tool.TodoWritten {
+			l.todos = append([]event.Todo(nil), rec.Event.Tool.Todos...)
+			l.todoWritten = true
+		}
+		if rec.Status == event.TurnRecoveryRequired && rec.Event.Recovery != nil {
+			l.recovery = cloneRecoveryStatus(rec.Event.Recovery)
 		}
 	}
 	if l.nextSeq <= l.compactedThrough {
@@ -329,7 +351,8 @@ func (l *Ledger) Begin() (string, error) {
 	}
 	l.active, l.status, l.terminal = id, event.TurnQueued, false
 	l.turnStartSeq, l.turnStarted = l.nextSeq, time.Now().UnixMilli()
-	l.routing, l.nextRouting = l.nextRouting, routingMetadata{}
+	l.routing = l.nextRouting
+	l.nextRouting = routingMetadata{runtimeEpoch: l.routing.runtimeEpoch}
 	if l.routing.submissionID != "" {
 		l.submissionTurns[l.routing.submissionID] = id
 	}
@@ -343,6 +366,20 @@ func (l *Ledger) SetRoutingMetadata(runtimeEpoch, submissionID string) {
 	}
 	l.mu.Lock()
 	l.nextRouting = routingMetadata{runtimeEpoch: runtimeEpoch, submissionID: submissionID}
+	l.mu.Unlock()
+}
+
+// SetRuntimeEpoch binds a newly installed runtime without changing a queued
+// submission identity. Active turns retain the routing captured by Begin.
+func (l *Ledger) SetRuntimeEpoch(runtimeEpoch string) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	l.nextRouting.runtimeEpoch = runtimeEpoch
+}
+
+func (l *Ledger) SetSubmissionID(submissionID string) {
+	l.mu.Lock()
+	l.nextRouting.submissionID = submissionID
 	l.mu.Unlock()
 }
 
@@ -439,6 +476,34 @@ func (l *Ledger) Append(e event.Event, status event.TurnStatus) (event.Event, bo
 	return l.appendLocked(e, status)
 }
 
+// AppendEnvelope returns the exact committed envelope under the append lock.
+// Consumers can project it before publication without reconstructing routing
+// from a later read (which may already belong to the next submission).
+func (l *Ledger) AppendEnvelope(e event.Event, status event.TurnStatus) (event.Event, Envelope, bool, error) {
+	if l == nil {
+		return e, Envelope{}, false, errors.New("turn event ledger is unavailable")
+	}
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	stamped, ok, err := l.appendLocked(e, status)
+	if err != nil || !ok || stamped.Sequence == 0 {
+		return stamped, Envelope{}, ok, err
+	}
+	if n := len(l.records); n > 0 && l.records[n-1].Sequence == stamped.Sequence {
+		return stamped, l.records[n-1], true, nil
+	}
+	// In-memory sessions deliberately have no WAL records, but use the same
+	// projection protocol and routing captured by this lock.
+	kind, _ := eventwire.KindName(stamped.Kind)
+	return stamped, Envelope{SchemaVersion: schemaVersion, SessionID: l.sessionID,
+		TurnID: stamped.TurnID, Sequence: stamped.Sequence, ItemID: stamped.ItemID,
+		AttemptID: stamped.AttemptID, RuntimeEpoch: l.routing.runtimeEpoch,
+		SubmissionID: l.routing.submissionID, Source: stamped.Source, Kind: kind,
+		Status: stamped.Status, CreatedAt: time.Now().UnixMilli(), Event: eventwire.ToWire(stamped),
+		TranscriptDigest: l.transcript.digest, TranscriptRevision: l.transcript.revision,
+		HeadID: l.transcript.headID, LeafMessageID: l.transcript.leafID, RewriteEpoch: l.transcript.rewriteEpoch}, true, nil
+}
+
 func (l *Ledger) appendLocked(e event.Event, status event.TurnStatus) (event.Event, bool, error) {
 	if l.poisoned != nil {
 		return e, false, l.unavailableLocked()
@@ -458,17 +523,47 @@ func (l *Ledger) appendLocked(e event.Event, status event.TurnStatus) (event.Eve
 	}
 	status = next
 	e.TurnID, e.Sequence, e.Status = l.active, l.nextSeq, status
+	e.SessionID, e.RuntimeEpoch, e.SubmissionID = l.sessionID, l.routing.runtimeEpoch, l.routing.submissionID
 	if l.path == "" {
+		w := eventwire.ToWire(e)
+		attemptID := e.AttemptID
+		if e.Kind == event.StreamAttempt {
+			attemptID = e.StreamAttempt.ID
+		} else if e.Tool.AttemptID != "" {
+			attemptID = e.Tool.AttemptID
+		}
+		kind, _ := eventwire.KindName(e.Kind)
+		rec := Envelope{
+			SchemaVersion: schemaVersion, SessionID: l.sessionID, TurnID: e.TurnID,
+			Sequence: e.Sequence, ItemID: e.ItemID, AttemptID: attemptID,
+			RuntimeEpoch: l.routing.runtimeEpoch, SubmissionID: l.routing.submissionID,
+			Source: e.Source, Kind: kind, Status: status, CreatedAt: time.Now().UnixMilli(), Event: w,
+			TranscriptRevision: l.transcript.revision, TranscriptDigest: l.transcript.digest,
+			HeadID: l.transcript.headID, LeafMessageID: l.transcript.leafID, RewriteEpoch: l.transcript.rewriteEpoch,
+		}
+		l.records = append(l.records, rec)
 		l.nextSeq++
 		l.status = status
+		if status == event.TurnRecoveryRequired && e.Recovery != nil {
+			l.recovery = cloneRecoveryStatus(e.Recovery)
+		}
+		if e.Kind == event.TurnStarted {
+			l.todos = nil
+			l.todoWritten = false
+			l.recovery = nil
+		} else if e.Kind == event.ToolResult && e.Tool.TodoWritten {
+			l.todos = append([]event.Todo(nil), e.Tool.Todos...)
+			l.todoWritten = true
+		}
 		if status.Terminal() {
 			l.terminal = true
+			l.addSummaryLocked(rec, e.Outcome)
 		}
 		return e, true, nil
 	}
 
 	w := eventwire.ToWire(e)
-	attemptID := ""
+	attemptID := e.AttemptID
 	if e.Kind == event.StreamAttempt {
 		attemptID = e.StreamAttempt.ID
 	} else if e.Tool.AttemptID != "" {
@@ -482,7 +577,8 @@ func (l *Ledger) appendLocked(e event.Event, status event.TurnStatus) (event.Eve
 		Source: e.Source,
 		Kind:   kind, Status: status, TranscriptRevision: l.transcript.revision,
 		TranscriptDigest: l.transcript.digest, HeadID: l.transcript.headID, LeafMessageID: l.transcript.leafID,
-		CreatedAt: time.Now().UnixMilli(), Event: w,
+		RewriteEpoch: l.transcript.rewriteEpoch,
+		CreatedAt:    time.Now().UnixMilli(), Event: w,
 	}
 	var line []byte
 	if l.writeVersion == legacySchemaVersion {
@@ -505,6 +601,17 @@ func (l *Ledger) appendLocked(e event.Event, status event.TurnStatus) (event.Eve
 		l.metrics.SyncCount++
 	}
 	l.records = append(l.records, rec)
+	if e.Kind == event.TurnStarted {
+		l.todos = nil
+		l.todoWritten = false
+		l.recovery = nil
+	} else if e.Kind == event.ToolResult && e.Tool.TodoWritten {
+		l.todos = append([]event.Todo(nil), e.Tool.Todos...)
+		l.todoWritten = true
+	}
+	if status == event.TurnRecoveryRequired && e.Recovery != nil {
+		l.recovery = cloneRecoveryStatus(e.Recovery)
+	}
 	if e.Kind == event.Text || e.Kind == event.Reasoning {
 		l.metrics.StreamRecords++
 	}
@@ -597,6 +704,11 @@ func (l *Ledger) AcknowledgeProjection(turnID string) error {
 	l.mu.Lock()
 	defer l.mu.Unlock()
 	if l.path == "" {
+		seq := l.terminalSequenceLocked(turnID)
+		if seq == 0 {
+			return fmt.Errorf("turn %s has no terminal event", turnID)
+		}
+		l.projectionAcks[turnID] = seq
 		return nil
 	}
 	if l.poisoned != nil {
@@ -832,9 +944,14 @@ func (l *Ledger) compactLocked(force bool) error {
 		TranscriptRevision: last.TranscriptRevision, TranscriptDigest: last.TranscriptDigest,
 		HeadID: last.HeadID, LeafMessageID: last.LeafMessageID,
 		TerminalSummaries: append([]TerminalSummary(nil), l.summaries...),
+		Todos:             append([]event.Todo(nil), l.todos...), TodoWritten: l.todoWritten,
+		Recovery: cloneRecoveryStatus(l.recovery),
 	}
 	if checkpoint.TerminalSummaries == nil {
 		checkpoint.TerminalSummaries = []TerminalSummary{}
+	}
+	if checkpoint.Todos == nil {
+		checkpoint.Todos = []event.Todo{}
 	}
 	line, err := json.Marshal(checkpoint)
 	if err != nil {
@@ -902,46 +1019,6 @@ func (l *Ledger) Close() error {
 	return l.maybeCompactLocked(true)
 }
 
-func (l *Ledger) MetricsSnapshot() MetricsSnapshot {
-	if l == nil {
-		return MetricsSnapshot{}
-	}
-	l.mu.Lock()
-	defer l.mu.Unlock()
-	out := l.metrics
-	out.FileSizeBytes = l.fileSize
-	out.UnconfirmedTurns = len(l.pendingProjectionsLocked())
-	return out
-}
-
-func (l *Ledger) DrainMetrics() MetricsSnapshot {
-	if l == nil {
-		return MetricsSnapshot{}
-	}
-	l.mu.Lock()
-	defer l.mu.Unlock()
-	out := l.metrics
-	out.FileSizeBytes = l.fileSize
-	out.UnconfirmedTurns = len(l.pendingProjectionsLocked())
-	l.metrics = MetricsSnapshot{}
-	return out
-}
-
-func latencyBucket(elapsed time.Duration) int {
-	switch {
-	case elapsed < time.Millisecond:
-		return 0
-	case elapsed < 5*time.Millisecond:
-		return 1
-	case elapsed < 20*time.Millisecond:
-		return 2
-	case elapsed < 100*time.Millisecond:
-		return 3
-	default:
-		return 4
-	}
-}
-
 func (l *Ledger) readAndRepairLocked() (parsedLedger, error) {
 	result := parsedLedger{records: []Envelope{}, summaries: []TerminalSummary{}, acks: make(map[string]uint64)}
 	data, err := os.ReadFile(l.path)
@@ -1002,6 +1079,9 @@ func (l *Ledger) readAndRepairLocked() (parsedLedger, error) {
 				result.compactedThrough = checkpoint.CompactedThroughSequence
 				result.projectionCommitted = checkpoint.ProjectionCommittedThrough
 				result.checkpoint = transcriptSnapshot{revision: checkpoint.TranscriptRevision, digest: checkpoint.TranscriptDigest, headID: checkpoint.HeadID, leafID: checkpoint.LeafMessageID}
+				result.todos = append([]event.Todo(nil), checkpoint.Todos...)
+				result.todoWritten = checkpoint.TodoWritten
+				result.recovery = cloneRecoveryStatus(checkpoint.Recovery)
 				result.summaries = append(result.summaries, checkpoint.TerminalSummaries...)
 				expectedSeq = checkpoint.CompactedThroughSequence + 1
 			case "event":

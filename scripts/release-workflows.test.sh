@@ -2,6 +2,8 @@
 set -euo pipefail
 
 repo_root="$(git rev-parse --show-toplevel)"
+node --test "$repo_root/scripts/verify-manual-desktop-producer.test.mjs"
+bash "$repo_root/scripts/manual-desktop-exception.test.sh"
 test_root="$(mktemp -d "${TMPDIR:-/tmp}/reasonix-release-workflow-test.XXXXXX")"
 cleanup() {
 	case "$test_root" in
@@ -13,6 +15,43 @@ trap cleanup EXIT
 
 # Stable tags have one entrypoint and one protected environment. Reusable
 # publishers must verify that only that entrypoint can claim prior approval.
+# The manual exception is immutable-candidate scoped and cannot advance any
+# Desktop update entry point. Keep normal signing as the default.
+python3 - "$repo_root" <<'PY'
+import pathlib, sys
+root = pathlib.Path(sys.argv[1])
+stable = (root / '.github/workflows/release-stable.yml').read_text()
+desktop = (root / '.github/workflows/release-desktop.yml').read_text()
+publisher = (root / 'scripts/publish-desktop-github-release.sh').read_text()
+exception = (root / 'scripts/manual-desktop-exception.sh').read_text()
+for workflow in (stable, desktop):
+    block = workflow.split('      desktop_manual_only:', 1)[1].split('\n\n', 1)[0]
+    assert 'default: false' in block
+    # One owner decides which tags may skip Authenticode, so an exception
+    # cannot drift between the orchestrator, the publisher, and the release.
+    assert 'scripts/manual-desktop-exception.sh validate' in workflow
+assert '7278072720a2dc7a31cce0eec18c1eacc149c0e0' in exception
+verifier = (root / 'scripts/verify-stable-release-artifacts.sh').read_text()
+# Postflight reads the same allowlist and asserts the update pointers never
+# serve the manual release, instead of naming one release's prior version.
+assert 'manual-desktop-exception.sh" validate "$desktop_tag"' in verifier
+assert '1.38.8' not in verifier and 'v1.38.7' not in verifier
+assert 'inputs.allow_recovery' in stable.split('name: Restrict manual Desktop distribution', 1)[1].split('- name:', 1)[0]
+assert stable.count('desktop_manual_only: ${{ inputs.desktop_manual_only || false }}') == 2
+assert "HAS_SIGNPATH: ${{ secrets.SIGNPATH_API_TOKEN != '' && !inputs.desktop_manual_only }}" in desktop
+assert desktop.index('name: Validate signing mode') < desktop.index('name: Build and package')
+assert "inputs.orchestrated }}\" != \"true\"" in desktop
+assert 'manual-download only' in desktop
+manual_exit = desktop.index('if [ "$DESKTOP_MANUAL_ONLY" = "true" ]; then', desktop.index('name: Mirror immutable assets'))
+assert manual_exit < desktop.index('validate_current_pointer()', manual_exit)
+assert 'pointer_moved=false' in desktop[manual_exit:manual_exit + 350]
+attach = desktop.split('name: Attach desktop manifest to matching CLI release', 1)[1].split('env:', 1)[0]
+assert '!inputs.desktop_manual_only' in attach
+manual_publish = publisher.split('if [ "${DESKTOP_MANUAL_ONLY:-false}" = "true" ]; then', 1)[1].split('elif', 1)[0]
+assert 'manual-desktop-exception.sh" validate "$tag"' in manual_publish
+assert 'args+=(--latest=false)' in manual_publish
+assert 'name: Sign artifacts (minisign)' in desktop
+PY
 [ "$(grep -Ec '^    environment: release$' "$repo_root/.github/workflows/release-stable.yml")" = "1" ]
 relay="$repo_root/.github/workflows/release-stable-trigger.yml"
 grep -Eq 'actions: write' "$relay"
@@ -223,6 +262,14 @@ for recovery_script in npm/publish.mjs scripts/finalize-npm-official-release.mjs
 	sed -n '/^  npm:/,$p' "$repo_root/.github/workflows/release-npm.yml" |
 		grep -Fq "$recovery_script"
 done
+# Orchestrated Stable recovery needs the same protected publisher repair as a
+# standalone run; the immutable product checkout must not select the old helper.
+npm_control_step="$(sed -n '/      - name: Load approved npm publication control plane/,/      - uses: actions\/setup-go@v7/p' "$repo_root/.github/workflows/release-npm.yml")"
+[ -n "$npm_control_step" ]
+if printf '%s\n' "$npm_control_step" | grep -q 'if:'; then
+	echo "npm publication control plane must load for orchestrated recovery too" >&2
+	exit 1
+fi
 grep -Fq 'publishPackages' "$repo_root/npm/build.mjs"
 grep -Eq 'signing-policy-slug: release-signing' "$repo_root/.github/workflows/release-desktop.yml"
 if grep -Eq 'signing-policy-slug:.*test-signing' "$repo_root/.github/workflows/release-desktop.yml"; then
@@ -1058,6 +1105,8 @@ write_desktop_manifest() {
 				"linux-amd64": asset("Reasonix-linux-amd64.deb")
 			},
 			downloads: {
+				"Reasonix-darwin-arm64.dmg": asset("Reasonix-darwin-arm64.dmg"),
+				"Reasonix-darwin-amd64.dmg": asset("Reasonix-darwin-amd64.dmg"),
 				"Reasonix-darwin-universal.dmg": asset("Reasonix-darwin-universal.dmg"),
 				"Reasonix-windows-amd64.zip": asset("Reasonix-windows-amd64.zip")
 			}
@@ -1642,6 +1691,12 @@ for workflow in release.yml release-npm.yml release-desktop.yml; do
 done
 grep -Fq 'reasonix/internal/productdocs.linkedVersion={{ .Tag }}' "$repo_root/.goreleaser.yaml"
 grep -Fq 'reasonix/internal/productdocs.linkedRevision={{ .Commit }}' "$repo_root/.goreleaser.yaml"
+# The Homebrew cask must keep stripping quarantine from the unsigned CLI, but
+# through Homebrew's current postflight_steps stanza, never the deprecated
+# `postflight do` that GoReleaser's hooks field renders.
+sed -n '/^homebrew_casks:/,/^release:/p' "$repo_root/.goreleaser.yaml" | grep -Fq 'postflight_steps do'
+sed -n '/^homebrew_casks:/,/^release:/p' "$repo_root/.goreleaser.yaml" | grep -Fq 'com.apple.quarantine'
+! sed -n '/^homebrew_casks:/,/^release:/p' "$repo_root/.goreleaser.yaml" | grep -Eq '^\s+hooks:|^\s+post:'
 grep -Fq 'reasonix/internal/productdocs.linkedVersion=${binaryVersion}' "$repo_root/npm/build.mjs"
 grep -Fq 'product_docs_ldflags="-X reasonix/internal/productdocs.linkedVersion=$VERSION' \
 	"$repo_root/scripts/desktop-build.sh"

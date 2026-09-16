@@ -31,7 +31,7 @@ export function RemoteSessionSurface({ tab, session, surfaceCommitToken, onSurfa
   const extensionForm = session.transcript.extensionForm;
   const [actionError, setActionError] = useState("");
   const [extensionFormBusy, setExtensionFormBusy] = useState(false);
-  useEffect(() => { setActionError(""); setExtensionFormBusy(false); }, [session.state, tab.id]);
+  useEffect(() => { setActionError(""); setExtensionFormBusy(false); }, [session.state, session.surfaceGeneration, tab.id]);
   const runAction = async (action: () => Promise<unknown>, propagate = false): Promise<void> => {
     setActionError("");
     try {
@@ -63,16 +63,40 @@ export function RemoteSessionSurface({ tab, session, surfaceCommitToken, onSurfa
       {!ready && !hasContent ? <SessionRecoveryPlaceholder availability={availability} /> : <Transcript
         items={session.transcript.items}
         live={session.transcript.live}
+        liveStore={session.liveStore}
         tabId={tab.id}
-        revealSignal={session.surfaceGeneration}
+        hostId={tab.remote.hostId}
+        geometrySessionKey={`${tab.id}:${session.surfaceGeneration}`}
         hydrating={!session.hydrated && !hasContent}
         surfaceCommitToken={surfaceCommitToken}
         onSurfacePaintReady={onSurfacePaintReady}
         running={session.transcript.running}
-        checkpoints={session.transcript.checkpoints}
-        onPrompt={(prompt) => runAction(() => session.submit(prompt))}
-        onRewind={(turn, scope) => runAction(() => session.rewind(turn, scope))}
-        rewindDisabled={session.running || !ready}
+        hasOlderHistory={session.transcript.historyHasOlder}
+        hasNewerHistory={session.transcript.historyHasNewer}
+        loadingNewerHistory={session.transcript.historyNewerLoading}
+        newerHistoryError={session.transcript.historyNewerError}
+        historyStartTurn={session.transcript.historyStartTurn}
+        totalTurns={session.transcript.historyTotalTurns}
+        loadingOlderHistory={session.transcript.historyOlderLoading}
+        olderHistoryError={session.transcript.historyOlderError}
+        onLoadOlderHistory={session.loadOlderHistory}
+        onLoadNewerHistory={session.loadNewerHistory}
+        onPrompt={(display, submit = display) => runAction(() => session.submit(submit, display))}
+        forkTargets={session.transcript.forkTargets}
+        // The tab's advertised capability, not the target list, decides whether
+        // this serve can create a child at all: an empty list on a capable serve
+        // means no completed turn here, which its own reason explains.
+        forkBlocked={tab.forkTargetsSupported ? null : "unsupported"}
+        onFork={tab.forkTargetsSupported ? (target) => runAction(async () => {
+          const child = await session.forkTurn(target);
+          // The child session belongs to the serve, so its surface is opened
+          // here rather than adopted from a returned desktop tab. Desktop keeps
+          // the operation until navigation succeeds, allowing a later click to
+          // recover the same child after an unknown result.
+          if (!child) return;
+          const opened = await navigateRemote(tab.remote!, { sessionId: child.sessionId });
+          if (opened.status === "completed") await session.acknowledgeFork(child.operationId);
+        }) : undefined}
       />}
 
       {ready && approval ? (

@@ -2,8 +2,8 @@ import assert from "node:assert/strict";
 import { completionSummaryPresentation, normalizeCompletionSummary } from "../lib/completionSummary";
 import { mergeTurnResult, normalizeTurnChanges, turnChangeText, turnCheckState } from "../lib/turnResult";
 import { historicalResultNotice, withTurnResult, withRunningChecks } from "../lib/completionResultState";
-import { partitionTurnItems } from "../lib/transcriptRows";
-import { initialState, type State, type Item } from "../lib/useController";
+import { ChatSource } from "../lib/chatViewSource";
+import { initialState, reducer, type State, type Item } from "../lib/useController";
 import { t } from "../lib/i18n";
 import type { TurnChanges } from "../lib/types";
 
@@ -43,6 +43,28 @@ const history = historicalResultNotice({ role: "notice", content: "", completion
 assert.equal(history?.completionSummary?.receipt?.diff?.id, diff.id);
 assert.equal(history?.completionSummary?.checkpointTurn, 0);
 const answer: Item = { kind: "assistant", id: "a0", text: "done", reasoning: "", streaming: false };
-const outside = partitionTurnItems([history!, answer]).flatMap(p => p.outsideItems);
-assert.deepEqual(outside.map(i => i.id), ["a0", "history"], "sidecar placement preserves a result footer");
-console.log("turn result truth, stable identity, concurrent checks and history passed");
+const source = new ChatSource("completion-results");
+source.update({ items: [user, history!, answer], running: false, hydrating: false, hasOlder: false, loadingOlder: false });
+assert.equal(source.getNodeSnapshot("history")?.kind, "notice", "historical results survive as ordinary records");
+source.dispose();
+for (const phase of ["checking", "verifying", "working", "reviewing"]) {
+  const plain: State = { ...initialState, items: [user], seq: 1 };
+  const next = reducer(plain, { type: "event", e: { kind: "turn_phase", phase } });
+  assert.equal(next.turnPhase, phase);
+  assert.equal(next.completionSummary?.checking ?? false, false, `${phase} is not verification evidence`);
+  assert.deepEqual(next.items, plain.items, `${phase} must not insert a result card`);
+
+  const checking = withRunningChecks({ ...plain, items: [user, tool("check")] });
+  const resultId = checking.items.find(i => i.kind === "notice")!.id;
+  const active = reducer(checking, { type: "event", e: { kind: "turn_phase", phase } });
+  assert.equal(active.completionSummary?.checking, true, `${phase} preserves real running checks`);
+  assert.equal(active.items.find(i => i.kind === "notice")!.id, resultId);
+}
+let live = reducer({ ...initialState, items: [user] }, { type: "event", e: { kind: "tool_dispatch", tool: { id: "live", name: "bash", readOnly: false, args: '{"command":"go test ./..."}' } } });
+live = reducer(live, { type: "event", e: { kind: "tool_progress", tool: { id: "live", name: "bash", readOnly: false, verifying: true, output: "running" } } });
+assert.equal(live.completionSummary?.checking, true);
+live = reducer(live, { type: "event", e: { kind: "turn_phase", phase: "working" } });
+assert.equal(live.completionSummary?.checking, true);
+live = reducer(live, { type: "event", e: { kind: "tool_result", tool: { id: "live", name: "bash", readOnly: false, output: "PASS" } } });
+assert.equal(live.completionSummary?.checking, false);
+console.log("turn result truth, stable identity, concurrent checks, phases and history passed");

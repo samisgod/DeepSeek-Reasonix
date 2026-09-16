@@ -444,9 +444,14 @@ const rawInitialBytes = [...initialJS, ...initialCSS, ...appShellCSS]
 // measure 2488853 B. Keep the next tenth; gzip, CSS, and chunk limits unchanged.
 // Combined model-settings and read-evidence integration measures 2492541 B,
 // adding 3688 B (0.148%) over the base. Retain the next one-decimal ceiling.
+// SessionRef bridge methods, active-row identity and the mock hydration event
+// contract measure 2439.8 KiB. Extracting exact-tab mock rebinding from the
+// startup bridge measures 2439.6 KiB; retain 0.3 KiB bounded toolchain headroom.
+// History preparation and cancellation across startup and paging add 884 B
+// (0.035%) to the 2498286 B base. Measured 2499170 B; retain 0.1 KiB headroom.
 // The progress-budget settings controls add their markup/state to the same
 // initial payload (~1.9 KiB raw measured on the settings baseline); retain
-// the same bounded headroom.
-const rawInitialBudgetKiB = 2_436.1;
+// the same bounded headroom on the 2440.7 KiB upstream ceiling.
+const rawInitialBudgetKiB = 2_442.7;
 assertBudget("initial raw JavaScript and CSS", rawInitialBytes, rawInitialBudgetKiB * 1024);
 assertBudget("largest initial JavaScript chunk raw", largestInitialJSRaw, 1_000 * 1024);

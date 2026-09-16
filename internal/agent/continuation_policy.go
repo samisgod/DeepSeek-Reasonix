@@ -25,20 +25,17 @@ func WithContinuationPolicy(ctx context.Context, policy ContinuationPolicy) cont
 	return context.WithValue(ctx, continuationPolicyKey{}, policy)
 }
 
-func continuationPolicyFromContext(ctx context.Context) (ContinuationPolicy, bool) {
-	if ctx == nil {
-		return ContinuationDisabled, false
-	}
-	policy, ok := ctx.Value(continuationPolicyKey{}).(ContinuationPolicy)
-	return policy, ok
-}
-
+// hostContinuationEnabled reports whether this Run opted into host-owned
+// synthetic continuation, which is what gates host progress checkpoints:
+// ordinary chat turns must never carry a todo-stall continuation.
 func (a *Agent) hostContinuationEnabled(ctx context.Context) bool {
 	if a == nil {
 		return false
 	}
-	if policy, ok := continuationPolicyFromContext(ctx); ok {
-		return policy == ContinuationExplicitFlow
+	if ctx != nil {
+		if policy, ok := ctx.Value(continuationPolicyKey{}).(ContinuationPolicy); ok {
+			return policy == ContinuationExplicitFlow
+		}
 	}
 	return a.continuationPolicy == ContinuationExplicitFlow
 }

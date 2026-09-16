@@ -1,5 +1,8 @@
 ﻿Unicode true
 
+SetCompressor /SOLID /FINAL lzma
+SetCompressorDictSize 32
+
 ####
 ## Reasonix per-user NSIS installer (Electron shell).
 ##
@@ -182,6 +185,12 @@ LangString reasonixUpdateTitle ${LANG_TRADCHINESE} "正在更新 Reasonix"
 LangString reasonixUpdateSubtitle ${LANG_ENGLISH} "Installing the verified update. Reasonix will restart automatically."
 LangString reasonixUpdateSubtitle ${LANG_SIMPCHINESE} "正在安装已验证的更新，完成后 Reasonix 将自动重启。"
 LangString reasonixUpdateSubtitle ${LANG_TRADCHINESE} "正在安裝已驗證的更新，完成後 Reasonix 將自動重新啟動。"
+LangString reasonixActivateBusy ${LANG_ENGLISH} "Reasonix is still running or another installation is in progress. Close it and click Retry. Details: %APPDATA%\reasonix\desktop-shell\logs\recovery.log"
+LangString reasonixActivateBusy ${LANG_SIMPCHINESE} "Reasonix 仍在运行，或另一个安装正在进行。请关闭后点击“重试”。详情见 %APPDATA%\reasonix\desktop-shell\logs\recovery.log"
+LangString reasonixActivateBusy ${LANG_TRADCHINESE} "Reasonix 仍在執行，或另一個安裝正在進行。請關閉後點擊「重試」。詳情見 %APPDATA%\reasonix\desktop-shell\logs\recovery.log"
+LangString reasonixActivateLocked ${LANG_ENGLISH} "Reasonix could not activate the release, often because a file was temporarily locked by antivirus or sync software. Wait a moment and click Retry. Details: %APPDATA%\reasonix\desktop-shell\logs\recovery.log"
+LangString reasonixActivateLocked ${LANG_SIMPCHINESE} "Reasonix 无法启用新版本，通常是文件被杀毒或同步软件临时锁定。请稍候再点击“重试”。详情见 %APPDATA%\reasonix\desktop-shell\logs\recovery.log"
+LangString reasonixActivateLocked ${LANG_TRADCHINESE} "Reasonix 無法啟用新版本，通常是檔案被防毒或同步軟體暫時鎖定。請稍候再點擊「重試」。詳情見 %APPDATA%\reasonix\desktop-shell\logs\recovery.log"
 
 ## Preserve the first-pass generated uninstaller so the release workflow can
 ## Authenticode-sign it together with the other installed payload files.
@@ -205,7 +214,6 @@ OutFile "..\..\bin\${INFO_PROJECTNAME}-${ARCH}-installer.exe" # Name of the inst
 !define REASONIX_PAYLOAD_SIGNATURE "reasonix-payload.json.minisig"
 !define REASONIX_LEGACY_UNINST_KEY "Software\Microsoft\Windows\CurrentVersion\Uninstall\Reasonix"
 !define REASONIX_LEGACY_PRODUCT_KEY "Software\reasonix\Reasonix"
-!define REASONIX_UNLOCK_RETRIES 60
 Var ReasonixUpdateMode
 Var ReasonixStageMode
 InstallDirRegKey HKCU "${UNINST_KEY}" "InstallLocation" # Reuse the previous install path on update; .onInit falls back to the default on first install.
@@ -394,83 +402,84 @@ Function reasonix.skipFinishPageForUpdate
 reasonix_show_finish_page:
 FunctionEnd
 
+# Check every stable entry point before extracting a replacement.  A running
+# shell may have already exited its Go service while still holding one of
+# these files open; treating that as an installable state recreates the
+# "installed but does not open" failure.  Silent installs fail closed.
 Function reasonix.waitForExecutableUnlock
-   StrCpy $0 0
-
-retry:
-   IfFileExists "$INSTDIR\${PRODUCT_EXECUTABLE}" 0 check_versioned_target
+   StrCpy $3 40
+reasonix_unlock_check:
+   StrCpy $2 0
+   IfFileExists "$INSTDIR\${PRODUCT_EXECUTABLE}" 0 reasonix_unlock_versioned
    ClearErrors
    FileOpen $1 "$INSTDIR\${PRODUCT_EXECUTABLE}" a
-   IfErrors locked
+   IfErrors reasonix_unlock_stable_locked
    FileClose $1
-
-check_versioned_target:
-   ; A same-version recovery install replaces this directory transactionally.
-   ; Detect the running active binary before asking the Go activator to rename it.
-   IfFileExists "$INSTDIR\versions\v${INFO_PRODUCTVERSION}\${PRODUCT_EXECUTABLE}" 0 check_electron_shell
+   Goto reasonix_unlock_versioned
+reasonix_unlock_stable_locked:
+   StrCpy $2 1
+reasonix_unlock_versioned:
+   IfFileExists "$INSTDIR\versions\v${INFO_PRODUCTVERSION}\${PRODUCT_EXECUTABLE}" 0 reasonix_unlock_guard
    ClearErrors
    FileOpen $1 "$INSTDIR\versions\v${INFO_PRODUCTVERSION}\${PRODUCT_EXECUTABLE}" a
-   IfErrors locked
+   IfErrors reasonix_unlock_versioned_locked
    FileClose $1
-
-check_electron_shell:
-   ; The Electron shell executable inside the app tree stays locked while running.
-   IfFileExists "$INSTDIR\versions\v${INFO_PRODUCTVERSION}\app\${REASONIX_ELECTRON_EXECUTABLE}" 0 check_guard
-   ClearErrors
-   FileOpen $1 "$INSTDIR\versions\v${INFO_PRODUCTVERSION}\app\${REASONIX_ELECTRON_EXECUTABLE}" a
-   IfErrors locked
-   FileClose $1
-
-check_guard:
-   IfFileExists "$INSTDIR\${REASONIX_GUARD}" 0 check_launcher
+   Goto reasonix_unlock_guard
+reasonix_unlock_versioned_locked:
+   StrCpy $2 1
+reasonix_unlock_guard:
+   IfFileExists "$INSTDIR\${REASONIX_GUARD}" 0 reasonix_unlock_launcher
    ClearErrors
    FileOpen $1 "$INSTDIR\${REASONIX_GUARD}" a
-   IfErrors locked
+   IfErrors reasonix_unlock_guard_locked
    FileClose $1
-
-check_launcher:
-	IfFileExists "$INSTDIR\${REASONIX_LAUNCHER}" 0 check_cli
-	ClearErrors
-	FileOpen $1 "$INSTDIR\${REASONIX_LAUNCHER}" a
-	IfErrors locked
-	FileClose $1
-
-check_cli:
-	IfFileExists "$INSTDIR\${REASONIX_CLI}" 0 check_portable_entry
-	ClearErrors
-	FileOpen $1 "$INSTDIR\${REASONIX_CLI}" a
-	IfErrors locked
-	FileClose $1
-
-check_portable_entry:
-   IfFileExists "$INSTDIR\${REASONIX_PORTABLE_ENTRY}" 0 done
+   Goto reasonix_unlock_launcher
+reasonix_unlock_guard_locked:
+   StrCpy $2 1
+reasonix_unlock_launcher:
+   IfFileExists "$INSTDIR\${REASONIX_LAUNCHER}" 0 reasonix_unlock_cli
+   ClearErrors
+   FileOpen $1 "$INSTDIR\${REASONIX_LAUNCHER}" a
+   IfErrors reasonix_unlock_launcher_locked
+   FileClose $1
+   Goto reasonix_unlock_cli
+reasonix_unlock_launcher_locked:
+   StrCpy $2 1
+reasonix_unlock_cli:
+   IfFileExists "$INSTDIR\${REASONIX_CLI}" 0 reasonix_unlock_portable
+   ClearErrors
+   FileOpen $1 "$INSTDIR\${REASONIX_CLI}" a
+   IfErrors reasonix_unlock_cli_locked
+   FileClose $1
+   Goto reasonix_unlock_portable
+reasonix_unlock_cli_locked:
+   StrCpy $2 1
+reasonix_unlock_portable:
+   IfFileExists "$INSTDIR\${REASONIX_PORTABLE_ENTRY}" 0 reasonix_unlock_result
    ClearErrors
    FileOpen $1 "$INSTDIR\${REASONIX_PORTABLE_ENTRY}" a
-   IfErrors locked
+   IfErrors reasonix_unlock_portable_locked
    FileClose $1
-   Goto done
-
-locked:
-   IntOp $0 $0 + 1
-   IntCmp $0 ${REASONIX_UNLOCK_RETRIES} failed 0 0
-   Sleep 1000
-   Goto retry
-
-failed:
-   IfSilent silent interactive
-
-interactive:
-   MessageBox MB_RETRYCANCEL|MB_ICONEXCLAMATION "Reasonix is still running. Close Reasonix, then click Retry to continue the installation." IDRETRY retry IDCANCEL abort
-   Goto retry
-
-silent:
+   Goto reasonix_unlock_result
+reasonix_unlock_portable_locked:
+   StrCpy $2 1
+reasonix_unlock_result:
+   StrCmp $2 0 reasonix_unlock_ok
+   IntOp $3 $3 - 1
+   IntCmp $3 0 reasonix_unlock_failed reasonix_unlock_retry reasonix_unlock_retry
+reasonix_unlock_retry:
+   Sleep 500
+   Goto reasonix_unlock_check
+reasonix_unlock_failed:
    SetErrorLevel 1618
-
-abort:
-   Abort "Reasonix is still running. Close Reasonix and run the installer again."
-
-done:
+   IfSilent reasonix_unlock_abort reasonix_unlock_prompt
+reasonix_unlock_prompt:
+   MessageBox MB_ICONEXCLAMATION|MB_RETRYCANCEL "Reasonix is still running. Close it and click Retry, or cancel this installation." IDRETRY reasonix_unlock_check
+reasonix_unlock_abort:
+   Abort
+reasonix_unlock_ok:
 FunctionEnd
+
 
 Section
     !insertmacro reasonix.setShellContext
@@ -483,6 +492,7 @@ Section
     ; STAGE payloads (as the one-shot legacy migrator) and is not persisted on
     ; a normal install.
     StrCmp $ReasonixStageMode "1" reasonix_stage_payload
+    ; The signed activator coordinates all installed versions before committing.
     Call reasonix.waitForExecutableUnlock
     Goto reasonix_normal_install
 
@@ -543,12 +553,36 @@ reasonix_normal_install:
     !error "${REASONIX_GUARD} was not found; normal installs require the signed layout activator."
     !endif
     DetailPrint "Reasonix layout activator output:"
-    nsExec::ExecToLog /OEM '"$PLUGINSDIR\${REASONIX_LAYOUT_INSTALLER}" --install-root "$INSTDIR" --version "v${INFO_PRODUCTVERSION}" --activate-staging "$R9" --no-relaunch'
+    StrCpy $R7 ""
+    IfSilent +2 0
+    StrCpy $R7 "--interactive-recovery"
+reasonix_layout_activate:
+    nsExec::ExecToLog /OEM '"$PLUGINSDIR\${REASONIX_LAYOUT_INSTALLER}" --install-root "$INSTDIR" --version "v${INFO_PRODUCTVERSION}" --activate-staging "$R9" --no-relaunch $R7'
     Pop $0
     StrCmp $0 "0" reasonix_layout_activated
     DetailPrint "Reasonix layout activation failed with exit code $0; the previous version remains active."
+    ; 1602 is the user's own cancel in the recovery dialog. Every other failure
+    ; keeps $R9 so Retry re-runs the activator against the same verified files;
+    ; the exit code is set only once the attempt is truly abandoned.
+    StrCmp $0 "1602" reasonix_activation_cancelled
+    IfSilent reasonix_activation_failed 0
+    StrCmp $0 "1618" reasonix_activation_busy_prompt reasonix_activation_locked_prompt
+reasonix_activation_busy_prompt:
+    MessageBox MB_ICONEXCLAMATION|MB_RETRYCANCEL "$(reasonixActivateBusy)" IDRETRY reasonix_layout_activate
+    Goto reasonix_activation_failed
+reasonix_activation_locked_prompt:
+    MessageBox MB_ICONEXCLAMATION|MB_RETRYCANCEL "$(reasonixActivateLocked)" IDRETRY reasonix_layout_activate
+reasonix_activation_failed:
     RMDir /r "$R9"
+    StrCmp $0 "1618" 0 +3
+    SetErrorLevel 1618
+    Goto reasonix_activation_abort
     SetErrorLevel 1
+    Goto reasonix_activation_abort
+reasonix_activation_cancelled:
+    RMDir /r "$R9"
+    SetErrorLevel 1602
+reasonix_activation_abort:
     Abort "Reasonix could not activate the verified release. The previous version was left unchanged."
 
 reasonix_layout_activated:
@@ -566,6 +600,12 @@ reasonix_layout_activated:
     ; retention removes that directory after a later update.
     CreateShortcut "$SMPROGRAMS\${INFO_PRODUCTNAME}.lnk" "$INSTDIR\${REASONIX_LAUNCHER}" "" "$INSTDIR\${REASONIX_LAUNCHER}" 0
     CreateShortCut "$DESKTOP\${INFO_PRODUCTNAME}.lnk" "$INSTDIR\${REASONIX_LAUNCHER}" "" "$INSTDIR\${REASONIX_LAUNCHER}" 0
+    ; Stamp the exact paths created in this shell context before the user can pin them.
+    nsExec::ExecToLog /OEM '"$INSTDIR\${REASONIX_LAUNCHER}" --repair-shortcuts "$SMPROGRAMS\${INFO_PRODUCTNAME}.lnk" "$DESKTOP\${INFO_PRODUCTNAME}.lnk"'
+    Pop $0
+    ${If} $0 != "0"
+        DetailPrint "Warning: shortcut identity repair failed ($0); the next normal launch will retry."
+    ${EndIf}
     !else
     CreateShortcut "$SMPROGRAMS\${INFO_PRODUCTNAME}.lnk" "$INSTDIR\versions\v${INFO_PRODUCTVERSION}\${PRODUCT_EXECUTABLE}"
     CreateShortCut "$DESKTOP\${INFO_PRODUCTNAME}.lnk" "$INSTDIR\versions\v${INFO_PRODUCTVERSION}\${PRODUCT_EXECUTABLE}"

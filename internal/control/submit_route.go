@@ -49,6 +49,11 @@ func isSimpleManagementInput(trimmed string) bool {
 	if trimmed == "/reload" || trimmed == "/effort" || strings.HasPrefix(trimmed, "/effort ") {
 		return true
 	}
+	// Focus-guided "/compact <focus>" runs the same asynchronous compaction as
+	// the bare form and never admits a turn (see Submit).
+	if strings.HasPrefix(trimmed, "/compact ") {
+		return true
+	}
 	switch trimmed {
 	case "/compact", "/context", "/new", "/clear":
 		return true
@@ -99,10 +104,7 @@ func (c *Controller) isPathSubmit(trimmed string) bool {
 }
 
 func (c *Controller) classifyPlanExecSubmit() SubmitDisposition {
-	if c.executor == nil || len(c.executor.CanonicalTodoState()) == 0 {
-		return SubmitManagementHandled
-	}
-	return SubmitTurnStarted
+	return SubmitManagementHandled
 }
 
 func classifyPrometheusSubmit(trimmed, command string) SubmitDisposition {

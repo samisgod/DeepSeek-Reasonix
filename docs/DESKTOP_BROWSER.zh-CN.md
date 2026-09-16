@@ -5,7 +5,8 @@
 桌面浏览器是 Reasonix 窗口内由用户与 Agent 共同操作的原生 Chromium 表面。网站在壳
 拥有的 Electron `WebContentsView` 中渲染；Agent 的每项能力都经过 Go 桌面服务，因此
 本地与远程 Agent、审批、取消、证据与操作记录共享同一实现。本文是浏览器面板、壳的
-表面管理器、Go `BrowserExecutor` 与 Agent 可见工具之间的契约。
+表面管理器、Go `BrowserExecutor` 与 Agent 可见工具之间的契约。背后没有壳的会话由
+[CDP 后端](BROWSER_CDP.zh-CN.md)提供同一批工具。
 
 ```text
 Agent 工具调用 ─▶ Go BrowserExecutor ─▶ ledger.reserve ─▶ host/browser.* ─▶ WebContentsView
@@ -34,6 +35,26 @@ Agent 工具调用 ─▶ Go BrowserExecutor ─▶ ledger.reserve ─▶ host/b
 加载错误、下载列表、DevTools 开关。恢复的标签只保留安全导航条目 `{url, title}`；不
 持久化表单状态、凭据或可重放提交。标签元数据与操作日志是桌面状态目录下新增的带
 版本文件（`browser/tabs-v1.json`、`browser/operations-v1.json`）。
+
+## 浏览器控制设置
+
+设置中心的「浏览器控制」页管理下列开关，取值都保存在壳 userData 配置目录
+（`desktop-shell/`）下的 `browser-control.json`。
+
+- **内置浏览器控制**（`controlEnabled`，默认开启）。壳通过 `desktop/browserControl`
+  推送给 Go，Go 在构建会话时读取：新会话完全不注册浏览器工具，正在运行的会话保持
+  启动时的工具集。
+- **忽略证书校验**（`ignoreCertificateErrors`，默认关闭）。只对访客会话放宽
+  `setCertificateVerifyProc`：访客视图工厂准备分区时应用，开关变化时对全部存活的访客
+  会话重新应用，无需重启。应用窗口与远程窗口仍使用 Chromium 默认校验。
+- **清除内置浏览器缓存**：清除 `persist:browser` 的 HTTP 缓存以及 Cache Storage、
+  Service Worker 和着色器缓存，保留 Cookie 与本地站点数据。
+- **清除全部浏览器数据**：额外清空所有存储类型，内置浏览器中的所有站点都会退出登录；
+  内存态 `temp:<id>` 分区不受影响。
+- **导入 Chrome 登录状态**：读取最近使用的 Chrome Profile 的 `Cookies` 数据库，逐条
+  解密（macOS 用登录钥匙串中的 `Chrome Safe Storage`，Linux 用众所周知的 `peanuts`
+  口令，Windows 用 `Local State` 中的 DPAPI 主密钥）后写入 `persist:browser`。已过期
+  的 Cookie、App-Bound（`v20`）取值与解密失败的行计入跳过；不会读取密码。
 
 ## Agent 能力
 

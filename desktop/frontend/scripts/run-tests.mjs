@@ -40,16 +40,8 @@ const OWNED_ELSEWHERE = new Map(Object.entries({
   "raf-batch.test.ts": "test:stream",
   "stream-delta-batch.test.ts": "test:stream",
   "use-controller-stream-progress.test.ts": "test:stream",
-  "transcript-kernel.test.ts": "test:transcript",
-  "transcript-kernel-races.test.ts": "test:transcript",
-  "transcript-timeline.test.ts": "test:transcript",
-  "transcript-viewport.test.tsx": "test:transcript",
-  "transcript-question-jump.test.ts": "test:transcript",
   "nested-scroll-handoff.test.ts": "test:transcript",
-  "creation-transcript-scrollbar.test.ts": "test:transcript",
-  "markdown-table-virtual.test.tsx": "test:transcript",
   "typography-overflow-contract.test.ts": "test:transcript",
-  "transcript-selection-retention.test.tsx": "test:transcript",
   "composer-menu-viewport.test.ts": "test:composer-menu-viewport",
   "virtual-menu-identity.test.tsx": "test:composer-menu-viewport",
   "remote-workspace-launch.test.ts": "test:remote",
@@ -80,10 +72,10 @@ for (const [name, owner] of OWNED_ELSEWHERE) {
   }
 }
 
-// CSS is a browser asset, not executable Node code. All discovered component
-// graphs share this loader contract, including transitive imports after region
-// extraction. CSS/layout correctness remains owned by syntax and browser gates.
-const assetArgs = ["--import", pathToFileURL(resolve(SCRIPTS_DIR, "css-stub-register.mjs")).href];
+// Browser assets are not executable Node code. Use the same SVG/image/CSS
+// loader as dedicated component suites so discovered transitive imports work.
+// Asset rendering remains covered by the browser and stylesheet gates.
+const assetArgs = ["--import", pathToFileURL(resolve(SCRIPTS_DIR, "svg-stub-register.mjs")).href];
 
 const suites = files.filter((name) => !OWNED_ELSEWHERE.has(name));
 console.log(`run-tests: ${suites.length} discovered suites (${OWNED_ELSEWHERE.size} owned by dedicated scripts)`);

@@ -2,204 +2,172 @@ package agent
 
 import (
 	"context"
-	"errors"
 	"fmt"
+	"strings"
 	"testing"
 
 	"reasonix/internal/agent/testutil"
 	"reasonix/internal/event"
-	"reasonix/internal/evidence"
 	"reasonix/internal/provider"
 	"reasonix/internal/tool"
 
 	_ "reasonix/internal/tool/builtin"
 )
 
-// stalledTodoTurns drives a todo that never advances: the first unique read
-// renews the lease, exact repeats after it do not.
-func stalledTodoTurns(extra int) []testutil.Turn {
-	turns := []testutil.Turn{{ToolCalls: []provider.ToolCall{{
+// The progress budget is the host's adaptive checkpoint: after a configured
+// number of tool-call rounds without new host-observed work on the active todo,
+// the host asks the model to reassess once, and a Goal-scoped run gets one
+// re-plan redirect at twice the threshold. These tests pin the user-facing
+// contract: the configured round count is what the loop enforces, off means
+// silent, ordinary chat never carries the continuation, and unique host work
+// renews the lease.
+
+func progressBudgetTodoTurn() testutil.Turn {
+	return testutil.Turn{ToolCalls: []provider.ToolCall{{
 		ID: "todo", Name: "todo_write",
 		Arguments: `{"todos":[{"content":"finish the task","status":"in_progress"}]}`,
-	}}}}
-	for i := range todoProgressNudgeRounds*2 + extra {
-		turns = append(turns, testutil.Turn{ToolCalls: []provider.ToolCall{{
-			ID: fmt.Sprintf("read-%d", i), Name: "inspect", Arguments: `{"path":"same"}`,
-		}}})
-	}
-	return turns
+	}}}
 }
 
-func stalledTodoAgent(t *testing.T, turns []testutil.Turn) (*Agent, *testutil.MockProvider) {
+func progressBudgetReadTurn(id, path string) testutil.Turn {
+	return testutil.Turn{ToolCalls: []provider.ToolCall{{
+		ID: id, Name: "inspect", Arguments: fmt.Sprintf(`{"path":%q}`, path),
+	}}}
+}
+
+// progressBudgetTurns scripts one todo write, then repeated identical reads of
+// path. The first read renews the lease; exact repeats after it accumulate
+// stall rounds.
+func progressBudgetTurns(repeats int, path string) []testutil.Turn {
+	turns := []testutil.Turn{progressBudgetTodoTurn(), progressBudgetReadTurn("read-first", path)}
+	for i := range repeats {
+		turns = append(turns, progressBudgetReadTurn(fmt.Sprintf("read-%d", i), path))
+	}
+	return append(turns, testutil.Turn{Text: "Done."})
+}
+
+func progressBudgetAgent(t *testing.T, opts Options, turns []testutil.Turn) (*Agent, *testutil.MockProvider) {
 	t.Helper()
 	reg := tool.NewRegistry()
 	reg.Add(fakeTool{name: "inspect", readOnly: true})
 	reg.Add(mustBuiltinTool(t, "todo_write"))
 	mp := testutil.NewMock("m", turns...)
-	return New(mp, reg, NewSession(""), Options{}, event.Discard), mp
+	return New(mp, reg, NewSession(""), opts, event.Discard), mp
 }
 
-// A stalled todo never ends a run, under Goal or ordinary chat. The model is
-// asked to reassess once; what it does after that is its own call, and the
-// zero-evidence ladder already owns the structural stop on the same receipts.
-func TestTodoProgressGuardNeverPausesARun(t *testing.T) {
+func modelHistoryContains(a *Agent, sub string) bool {
+	for _, msg := range a.ModelHistorySnapshot() {
+		if strings.Contains(msg.Content, sub) {
+			return true
+		}
+	}
+	return false
+}
+
+func TestProgressBudgetNudgeUsesConfiguredRounds(t *testing.T) {
 	for _, tc := range []struct {
-		name string
-		ctx  func() context.Context
+		name           string
+		repeats        int
+		wantProgressCh bool
 	}{
-		{"chat", context.Background},
-		{"goal", func() context.Context {
-			ctx := WithDeliveryExecutionScope(context.Background(), DeliveryExecutionScope{ID: "goal-1"})
-			return WithContinuationPolicy(ctx, ContinuationExplicitFlow)
-		}},
+		{"below threshold stays silent", 2, false},
+		{"at threshold nudges", 3, true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			turns := append(stalledTodoTurns(4), testutil.Turn{Text: "Done."})
-			a, mp := stalledTodoAgent(t, turns)
-
-			err := a.Run(tc.ctx(), "work until the todo is complete")
-			if err != nil && !isToolLoopPause(err) {
-				t.Fatalf("Run error = %v", err)
+			a, _ := progressBudgetAgent(t,
+				Options{ContinuationPolicy: ContinuationExplicitFlow, ProgressBudgetRounds: 3},
+				progressBudgetTurns(tc.repeats, "same"))
+			if err := a.Run(context.Background(), "work until the todo is complete"); err != nil {
+				t.Fatalf("Run: %v", err)
 			}
-			if err != nil {
-				// Goal's structural guard may stop first on its own terms; what
-				// must not exist is a stop keyed to the todo streak.
-				if got := PauseClass(err); got == "todo_stall" {
-					t.Fatalf("pause class = %q, want the todo stall pause gone", got)
-				}
-				return
-			}
-			if got, want := mp.CallCount(), len(turns); got != want {
-				t.Fatalf("provider calls = %d, want all %d turns to run past the old threshold", got, want)
-			}
-			nudged := sessionContains(a, "Host progress check")
-			if tc.name == "chat" {
-				if nudged {
-					t.Fatal("ordinary chat must not inject a todo stall continuation")
-				}
-			} else if !nudged {
-				t.Fatal("the Goal reassessment nudge went missing; only the pause was meant to go")
+			if got := modelHistoryContains(a, "Host progress check"); got != tc.wantProgressCh {
+				t.Fatalf("nudge present = %v, want %v (repeats=%d, budget=3)", got, tc.wantProgressCh, tc.repeats)
 			}
 		})
 	}
 }
 
-func TestGoalTodoProgressGuardReplansWithoutPausing(t *testing.T) {
-	turns := []testutil.Turn{{ToolCalls: []provider.ToolCall{{
-		ID: "todo", Name: "todo_write",
-		Arguments: `{"todos":[{"content":"finish the task","status":"in_progress"}]}`,
-	}}}}
-	// The first unique read renews the lease; enough exact repeats after it
-	// reach the Goal redirect threshold (twice the nudge round).
-	for i := range progressRedirectRounds(todoProgressNudgeRounds) + 1 {
-		turns = append(turns, testutil.Turn{ToolCalls: []provider.ToolCall{{
-			ID: fmt.Sprintf("read-%d", i), Name: "inspect", Arguments: `{"path":"same"}`,
-		}}})
+func TestProgressBudgetOffStaysSilent(t *testing.T) {
+	a, _ := progressBudgetAgent(t,
+		Options{ContinuationPolicy: ContinuationExplicitFlow, ProgressBudgetRounds: ProgressBudgetRoundsOff},
+		progressBudgetTurns(12, "same"))
+	if err := a.Run(context.Background(), "work until the todo is complete"); err != nil {
+		t.Fatalf("Run: %v", err)
 	}
-	turns = append(turns, testutil.Turn{Text: "Replanned; a real blocker would be reported through update_goal."})
-
-	reg := tool.NewRegistry()
-	reg.Add(fakeTool{name: "inspect", readOnly: true})
-	reg.Add(mustBuiltinTool(t, "todo_write"))
-	mp := testutil.NewMock("m", turns...)
-	a := New(mp, reg, NewSession(""), Options{ContinuationPolicy: ContinuationExplicitFlow}, event.Discard)
-	ctx := WithDeliveryExecutionScope(context.Background(), DeliveryExecutionScope{ID: "goal-1", TaskText: "finish the task"})
-	if err := a.Run(ctx, "work until the todo is complete"); err != nil {
-		t.Fatalf("Goal todo stall must redirect, not pause: %v", err)
-	}
-	if !sessionContains(a, "Host progress redirect") {
-		t.Fatal("Goal todo stall did not inject a re-plan redirect")
+	if modelHistoryContains(a, "Host progress check") {
+		t.Fatal("progress budget off must not inject a reassessment nudge")
 	}
 }
 
-func TestTodoProgressGuardRenewsOnUniqueHostWork(t *testing.T) {
-	turns := []testutil.Turn{{ToolCalls: []provider.ToolCall{{
-		ID: "todo", Name: "todo_write",
-		Arguments: `{"todos":[{"content":"finish the task","status":"in_progress"}]}`,
-	}}}}
-	for i := range todoProgressNudgeRounds - 1 {
-		turns = append(turns, testutil.Turn{ToolCalls: []provider.ToolCall{{
-			ID: fmt.Sprintf("read-a-%d", i), Name: "inspect", Arguments: `{"path":"same"}`,
-		}}})
-	}
-	turns = append(turns,
-		testutil.Turn{ToolCalls: []provider.ToolCall{{ID: "write", Name: "write_file", Arguments: `{"path":"result.txt","content":"done"}`}}},
-	)
-	for i := range todoProgressNudgeRounds - 1 {
-		turns = append(turns, testutil.Turn{ToolCalls: []provider.ToolCall{{
-			ID: fmt.Sprintf("read-b-%d", i), Name: "inspect", Arguments: `{"path":"same"}`,
-		}}})
-	}
-	turns = append(turns,
-		testutil.Turn{ToolCalls: []provider.ToolCall{{
-			ID: "done", Name: "complete_step",
-			Arguments: `{"step":"finish the task","result":"done","evidence":[{"kind":"files","summary":"created result","paths":["result.txt"]}]}`,
-		}}},
-		testutil.Turn{Text: "done"},
-	)
-
-	reg := tool.NewRegistry()
-	reg.Add(fakeTool{name: "inspect", readOnly: true})
-	reg.Add(fakeTool{name: "write_file", readOnly: false})
-	reg.Add(mustBuiltinTool(t, "todo_write"))
-	reg.Add(mustBuiltinTool(t, "complete_step"))
-	a := New(testutil.NewMock("m", turns...), reg, NewSession(""), Options{}, event.Discard)
-	if err := a.Run(context.Background(), "finish the todo"); err != nil {
+func TestProgressBudgetOrdinaryChatStaysSilent(t *testing.T) {
+	a, _ := progressBudgetAgent(t, Options{}, progressBudgetTurns(12, "same"))
+	if err := a.Run(context.Background(), "work until the todo is complete"); err != nil {
 		t.Fatalf("Run: %v", err)
 	}
-	if sessionContains(a, "Host progress check") {
+	if modelHistoryContains(a, "Host progress check") {
+		t.Fatal("ordinary chat must not inject a todo stall continuation")
+	}
+}
+
+func TestProgressBudgetGoalRedirectsAtDoubleRounds(t *testing.T) {
+	a, _ := progressBudgetAgent(t,
+		Options{ContinuationPolicy: ContinuationExplicitFlow, ProgressBudgetRounds: 3},
+		progressBudgetTurns(7, "same"))
+	ctx := WithDeliveryExecutionScope(context.Background(), DeliveryExecutionScope{ID: "goal-1", TaskText: "finish the task"})
+	if err := a.Run(ctx, "work until the todo is complete"); err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if !modelHistoryContains(a, "Host progress check") {
+		t.Fatal("the first checkpoint nudge went missing before the Goal redirect")
+	}
+	if !modelHistoryContains(a, "Host progress redirect") {
+		t.Fatal("a stalled Goal todo must be asked to re-plan at twice the nudge threshold")
+	}
+}
+
+func TestProgressBudgetRenewsOnUniqueHostWork(t *testing.T) {
+	turns := []testutil.Turn{progressBudgetTodoTurn(), progressBudgetReadTurn("read-first", "same")}
+	// Two stall rounds, then a unique read of another path resets the streak;
+	// the repeats after it must not reach the threshold from the earlier count.
+	turns = append(turns,
+		progressBudgetReadTurn("stall-1", "same"),
+		progressBudgetReadTurn("stall-2", "same"),
+		progressBudgetReadTurn("unique", "other"),
+		progressBudgetReadTurn("after-1", "same"),
+		progressBudgetReadTurn("after-2", "same"),
+		testutil.Turn{Text: "Done."},
+	)
+	a, _ := progressBudgetAgent(t,
+		Options{ContinuationPolicy: ContinuationExplicitFlow, ProgressBudgetRounds: 3}, turns)
+	if err := a.Run(context.Background(), "work until the todo is complete"); err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if modelHistoryContains(a, "Host progress check") {
 		t.Fatal("unique host work should renew the progress lease before the nudge threshold")
 	}
 }
 
-func TestCanonicalTodoProgressIgnoresTitleAndPendingListChurn(t *testing.T) {
-	a := &Agent{sess: sessionRuntime{todoState: []evidence.TodoItem{
-		{Content: "finish the task", Status: "in_progress"},
-		{Content: "write tests", Status: "pending"},
-	}}}
-	before, tracking := a.canonicalTodoProgress()
-	if !tracking {
-		t.Fatal("incomplete todo list should be tracked")
+func TestNormalizeProgressBudgetRounds(t *testing.T) {
+	for _, tc := range []struct {
+		in   int
+		want int
+	}{
+		{0, DefaultProgressBudgetRounds},
+		{-5, ProgressBudgetRoundsOff},
+		{1, ProgressBudgetRoundsMin},
+		{3, 3},
+		{17, 17},
+		{ProgressBudgetRoundsMax, ProgressBudgetRoundsMax},
+		{1000, ProgressBudgetRoundsMax},
+	} {
+		if got := NormalizeProgressBudgetRounds(tc.in); got != tc.want {
+			t.Errorf("NormalizeProgressBudgetRounds(%d) = %d, want %d", tc.in, got, tc.want)
+		}
 	}
-	a.setTodoState([]evidence.TodoItem{
-		{Content: "finish the task carefully", Status: "in_progress"},
-		{Content: "write tests", Status: "pending"},
-		{Content: "update docs", Status: "pending"},
-	})
-	after, tracking := a.canonicalTodoProgress()
-	if !tracking || after != before {
-		t.Fatalf("title/pending churn changed progress from %d to %d", before, after)
+	if DefaultProgressBudgetRounds != 8 {
+		t.Errorf("default progress budget = %d, want the historical 8", DefaultProgressBudgetRounds)
 	}
-}
-
-func TestMaxStepsGraceSummaryBypassesIncompleteTodoReadiness(t *testing.T) {
-	reg := tool.NewRegistry()
-	reg.Add(mustBuiltinTool(t, "todo_write"))
-	reg.Add(fakeTool{name: "write_file", readOnly: false})
-	mp := testutil.NewMock("m",
-		testutil.Turn{ToolCalls: []provider.ToolCall{
-			{ID: "todo", Name: "todo_write", Arguments: `{"todos":[{"content":"unfinished","status":"in_progress"}]}`},
-			{ID: "write", Name: "write_file", Arguments: `{"path":"unfinished.txt"}`},
-		}},
-		testutil.Turn{Text: "Progress saved; the todo remains unfinished."},
-	)
-	a := New(mp, reg, NewSession(""), Options{MaxSteps: 1}, event.Discard)
-
-	err := a.Run(context.Background(), "start a long task")
-	var pause *maxStepsPause
-	if !errors.As(err, &pause) {
-		t.Fatalf("Run error = %v, want maxStepsPause instead of final-readiness retries", err)
+	if progressRedirectRounds(8) != 16 {
+		t.Errorf("goal redirect at default = %d, want the historical 16", progressRedirectRounds(8))
 	}
-	if mp.CallCount() != 2 {
-		t.Fatalf("provider calls = %d, want tool round plus one summary round", mp.CallCount())
-	}
-}
-
-func mustBuiltinTool(t *testing.T, name string) tool.Tool {
-	t.Helper()
-	builtin, ok := tool.LookupBuiltin(name)
-	if !ok {
-		t.Fatalf("builtin %q is not registered", name)
-	}
-	return builtin
 }
