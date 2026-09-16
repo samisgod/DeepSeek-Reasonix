@@ -1,7 +1,15 @@
 # PR: 进度预算（Progress Budget）可配置化
 
 > 目标分支：`main-v2` · 提交：`340459042 add budget config`
-> （基于 `f86e488c0`；已合并上游 `e2145b031`，v1.38.6 基线）
+> （基于 `f86e488c0`；已合并上游 `8b426dc87`，v1.38.9 基线）
+
+> **上游合并后的落点（v1.38.9）**：上游在 v1.38.6→v1.38.9 之间整体退役了这项检查点所依赖的机制
+> ——storm breaker、todo progress guard、零证据阶梯，以及 `internal/agent` 下约 70 个文件，
+> 并改用 `repeat_reminder.go` 的非阻塞重复调用提醒。因此本功能不再是对既有阈值打补丁，而是由 fork
+> 自带检查点内核：`internal/agent/progress_budget.go`（常量、归一化、两条消息、`trackTodoProgress`），
+> 并由 `run_loop.go` 的 `handleToolRound` 在工具批次之后驱动，位置与退役前的调用点一致。
+> 注入的两条消息文本保持逐字节不变——`preview.go` 仍把 `Host progress check:` /
+> `Host progress redirect:` 识别为旧版本可能已持久化的主机消息。
 
 ## Summary
 
@@ -40,11 +48,14 @@ Agent 内置了固定的进度检查点：当活跃 todo 连续 **8 轮**工具�
 
 | 文件 | 说明 |
 |---|---|
-| `internal/agent/storm_breaker.go` | 新增 `NormalizeProgressBudgetRounds`、`ProgressBudgetRoundsOff`、`DefaultProgressBudgetRounds`、`progressRedirectRounds` |
+| `internal/agent/progress_budget.go` | 检查点内核：`NormalizeProgressBudgetRounds`、`ProgressBudgetRoundsOff`、`DefaultProgressBudgetRounds`、`progressRedirectRounds`、两条主机消息、`trackTodoProgress`（重建自上游已删除的 `storm_breaker.go` + `goal_run_boundary.go` 版本） |
 | `internal/agent/agent.go` | `Options.ProgressBudgetRounds`；`New` 归一化后写入 agentConfig |
 | `internal/agent/agent_config.go` | `progressBudgetRounds` 字段 |
-| `internal/agent/goal_run_boundary.go` | `trackTodoProgress` 改用配置阈值；`<=0` 跳过催促与 Goal 重定向 |
-| `internal/agent/todo_progress_guard_test.go` | 测试改用派生阈值 `progressRedirectRounds(...)` |
+| `internal/agent/run_loop.go` | `beginRunTurn` 播种检查点状态；`handleToolRound` 在工具批次后调用 `trackTodoProgress`（经 `appendCommittedMessages` 持久化） |
+| `internal/agent/turnruntime.go` | 每回合停滞状态：`todoProgress` / `trackingTodoProgress` / `todoStallRounds` / `seenTodoProgress` |
+| `internal/agent/todo_state.go` | `canonicalTodoStatus`、`canonicalTodoProgress`（标题改写与 pending 列表变动不算进展） |
+| `internal/agent/continuation_policy.go` | `hostContinuationEnabled`：仅显式续跑流程（Goal 等）注入催促，普通对话不注入 |
+| `internal/agent/todo_progress_guard_test.go` | 覆盖配置阈值生效、关闭后静默、普通对话静默、Goal 重定向、唯一主机产出续租、归一化边界 |
 | `internal/config/config.go` | `ProgressBudget *bool`、`ProgressBudgetRounds` 字段 + `ProgressBudgetEnabled()` / `ProgressBudgetRoundsValue()` |
 | `internal/config/edit.go` | `SetProgressBudgetEnabled` / `SetProgressBudgetRounds`（拒绝负数） |
 | `internal/config/render.go` | 全量渲染与 diff 渲染支持两个新键 |
@@ -61,7 +72,7 @@ Agent 内置了固定的进度检查点：当活跃 todo 连续 **8 轮**工具�
 | `desktop/frontend/src/lib/types.ts` | `AgentView.progressBudgetEnabled?` / `progressBudgetRounds?` |
 | `desktop/frontend/src/lib/bridge.ts` | 绑定接口、mock 实现、事件路由分组 |
 | `desktop/frontend/src/locales/{en,zh,zh-TW}.ts` | 每语言 9 条新文案 |
-| `desktop/frontend/scripts/check-bundle-budget.mjs` | 在上游新基线上显式上调有界预算：initial gzip 469.3→469.7、initial raw 2434.2→2436.1、zh 63.3→63.7、zh-TW 64.0→64.4（KiB） |
+| `desktop/frontend/scripts/check-bundle-budget.mjs` | 在上游基线上显式上调有界预算：initial gzip 469.3→469.7、initial raw 2440.7→2442.7、zh 63.3→63.7、zh-TW 64.0→64.4（KiB） |
 | `desktop/frontend/src/generated/desktopContract.generated.{ts,json}` | 重新生成：新增 `SetProgressBudgetEnabled` / `SetProgressBudgetRounds` 主机契约条目 |
 | `desktop/host_command_owners.generated.json` | 重新生成：新增两个方法的 ownership 元数据（缺失会导致注册表拒绝调用） |
 
@@ -78,23 +89,24 @@ Agent 内置了固定的进度检查点：当活跃 todo 连续 **8 轮**工具�
 
 ## Verification
 
-合并上游 v1.38.6（`e2145b031`）后重新实测：
+合并上游 v1.38.9（`8b426dc87`）后重新实测：
 
 **Go**
 
 ```powershell
 go build ./...                                  # 主模块 OK
 cd desktop; go build ./...                      # desktop 模块 OK
-go test ./internal/agent/ ./internal/config/    # ok
-go test ./internal/boot/... ./internal/control/...  # ok
-go test ./internal/agent/ -run "TestTodoProgress|TestGoalTodoProgress|TestCanonicalTodoProgress|TestMaxStepsGrace" -v
-# TestTodoProgressGuardNeverPausesARun (chat/goal)、TestGoalTodoProgressGuardReplansWithoutPausing、
-# TestTodoProgressGuardRenewsOnUniqueHostWork、TestCanonicalTodoProgressIgnoresTitleAndPendingListChurn、
-# TestMaxStepsGraceSummaryBypassesIncompleteTodoReadiness — 全部 PASS
-go test ./internal/productdocs/...              # ok（GUIDE 文档一致性）
-cd desktop; go test . -timeout 900s              # ok（含 TestHostCommandOwnersMatchSource、
-                                                # TestHostContractGeneratedFilesAreCurrent、
-                                                # TestHostRPCHelloThenInvoke）
+go test ./internal/agent/                       # ok
+go test ./internal/config/... ./internal/boot/...   # ok
+go test ./internal/control/... ./internal/productdocs/...  # ok（含 GUIDE 文档一致性）
+go test ./internal/agent/ -run "TestProgressBudget|TestNormalizeProgressBudget" -v
+# TestProgressBudgetNudgeUsesConfiguredRounds (below/at threshold)、
+# TestProgressBudgetOffStaysSilent、TestProgressBudgetOrdinaryChatStaysSilent、
+# TestProgressBudgetGoalRedirectsAtDoubleRounds、TestProgressBudgetRenewsOnUniqueHostWork、
+# TestNormalizeProgressBudgetRounds — 全部 PASS
+cd desktop; go test . -timeout 900s              # 仅 1 例失败：TestRunShellForTabRoutesToRequestedTab
+                                                # （本机 PATH 无 bash 的 Windows 环境问题，
+                                                #  在纯净 8b426dc87 上同样失败）
 ```
 
 新增方法必须进入主机契约注册表：`cd desktop && go run . -emit-contract frontend/src/generated`
@@ -105,17 +117,17 @@ cd desktop; go test . -timeout 900s              # ok（含 TestHostCommandOwner
 
 ```powershell
 cd desktop/frontend
-npx tsc --noEmit                       # OK（含 _CheckGenToApp 绑定漂移断言）
-npx tsc --noEmit -p tsconfig.test.json # OK
+pnpm install                            # 上游新增依赖 anser
+npx tsc --noEmit                        # OK（含 _CheckGenToApp 绑定漂移断言）
 npx eslint src/components/SettingsPanel.tsx src/lib/bridge.ts src/lib/types.ts \
-          src/locales/{en,zh,zh-TW}.ts # 0 问题
+          src/locales/{en,zh,zh-TW}.ts  # 0 问题
 node --import ./scripts/css-stub-register.mjs --import tsx src/__tests__/settings-refresh-snapshot.test.tsx
-# 106/106 PASS
+# 99/99 PASS
 npx vite build && node scripts/check-bundle-budget.mjs   # 全部 PASS，见下
 ```
 
-**包体预算（实测）**：初始 gzip `448.8 / 469.7 KiB`、zh `55.4 / 63.7`、zh-TW `56.3 / 64.4`、
-initial raw `2366.5 / 2436.1 KiB` —— 上游合并后重测的实际值，均为新上限留有余量。
+**包体预算（实测）**：初始 gzip `449.9 / 469.7 KiB`、zh `58.8 / 63.7`、zh-TW `59.7 / 64.4`、
+initial raw `2423.0 / 2442.7 KiB` —— 合并上游后重测的实际值，均在上限之内。
 
 ## Documentation impact
 
@@ -123,8 +135,8 @@ Documentation-impact: updated — `docs/GUIDE.md`、`docs/GUIDE.zh-CN.md` 与 `r
 
 ## Cache impact
 
-Cache-impact: none — 不触碰系统提示词、memory 前缀、output style、工具 schema、provider 请求序列化或压缩逻辑。检查点仅改变一条主机生成的用户消息（“Host progress check”/“Host progress redirect”）在会话中的**注入时机**，该消息本身及注入机制与改动前一致；默认阈值下会话内容与旧版本逐字节相同。
+Cache-impact: none — 不触碰系统提示词、memory 前缀、output style、工具 schema、provider 请求序列化或压缩逻辑。检查点仅改变一条主机生成的用户消息（“Host progress check”/“Host progress redirect”）在会话中的**注入时机**；两条消息的文本与上游旧版本逐字节一致，默认阈值下的会话内容因此保持不变。
 
-Cache-guard: `go test ./internal/agent/ -run "TestTodoProgress|TestGoalTodoProgress|TestCanonicalTodoProgress"` 覆盖默认阈值下的催促/重定向注入时机与内容；`TestTodoProgressGuardNeverPausesARun` 保证检查点不会结束运行（与旧行为一致的额外防线）。系统提示词零改动，无需 System-prompt-review。
+Cache-guard: `go test ./internal/agent/ -run "TestProgressBudget|TestNormalizeProgressBudget"` 覆盖配置阈值下的催促/重定向注入时机与内容；`TestProgressBudgetOrdinaryChatStaysSilent` 与 `TestProgressBudgetOffStaysSilent` 保证不会在普通对话或关闭状态下注入。系统提示词零改动，无需 System-prompt-review。
 
 System-prompt-review: N/A
