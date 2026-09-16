@@ -26,6 +26,27 @@ const ci = workflow("ci");
 const release = workflow("release-desktop");
 const appMemory = workflow("app-memory");
 
+test("Certum signing survives skipped ancestor gates but requires successful inputs", () => {
+  const body = job(release, "windows-sign");
+  // A status function is required to override GitHub's implicit success(),
+  // which otherwise propagates a skipped standalone/orchestrator ancestor.
+  assert.match(body, /if:.*always\(\)/);
+  const context = {
+    needs: { resolve: { result: "success" }, build: { result: "success" }, "signing-contract": { result: "success" } },
+    github: { repository: "esengine/DeepSeek-Reasonix" },
+    inputs: { desktop_manual_only: false },
+  };
+  assert.equal(condition(body, context), true);
+  assert.equal(condition(body, { ...context, cancelled: () => true }), false);
+  for (const name of Object.keys(context.needs)) {
+    for (const result of ["failure", "skipped", "cancelled"]) {
+      assert.equal(condition(body, { ...context, needs: { ...context.needs, [name]: { result } } }), false);
+    }
+  }
+  assert.equal(condition(body, { ...context, inputs: { desktop_manual_only: true } }), false);
+  assert.equal(condition(body, { ...context, github: { repository: "example/fork" } }), false);
+});
+
 test("Windows full runs use the partitioned suite without a duplicate module sweep", () => {
   const body = job(ci, "test");
   const enabled = (name, os, event, run = "true") => {
@@ -195,11 +216,11 @@ test("every ci job is reachable from a required aggregate", () => {
 test("reuse skips only build work and still gates every publisher on validation", () => {
   const context = {
     inputs: { preflight_artifact_prefix: "desktop-123-1-preflight", orchestrated: true, signing_preflight_verified: true, signing_preflight: false, production_signing_smoke: false },
-    needs: { resolve: { result: "success" }, "cache-guard": { result: "success" }, "signing-contract": { result: "success" }, "mac-universal-intel": { result: "skipped" }, build: { result: "skipped" } },
+    needs: { resolve: { result: "success" }, "cache-guard": { result: "success" }, "signing-contract": { result: "success" }, "mac-universal-intel": { result: "skipped" }, "windows-sign": { result: "skipped" }, build: { result: "skipped" } },
   };
   assert.equal(condition(job(release, "build"), context), false);
   assert.equal(condition(job(release, "publish"), context), true);
-  for (const key of ["resolve", "cache-guard", "signing-contract", "mac-universal-intel", "build"]) {
+  for (const key of ["resolve", "cache-guard", "signing-contract", "mac-universal-intel", "windows-sign", "build"]) {
     for (const result of ["failure", "cancelled"]) {
       const changed = structuredClone(context);
       changed.needs[key].result = result;
@@ -218,7 +239,29 @@ test("reuse skips only build work and still gates every publisher on validation"
   assert.equal(condition(job(release, "publish"), fresh), false);
   fresh.needs.build.result = "success";
   fresh.needs["mac-universal-intel"].result = "success";
+  assert.equal(condition(job(release, "publish"), fresh), false, "unsigned Windows bundles cannot publish");
+  fresh.needs["windows-sign"].result = "success";
   assert.equal(condition(job(release, "publish"), fresh), true);
+});
+
+test("Certum signing preserves native builds and gates publication and attestation", () => {
+  const signer = job(release, "windows-sign");
+  assert.match(job(release, "build"), /runner: windows-11-arm, platform: windows\/arm64/);
+  assert.match(signer, /runs-on: windows-2022/);
+  assert.match(signer, /arch: \[amd64, arm64\]/);
+  assert.match(signer, /max-parallel: 1/);
+  assert.match(signer, /ref: \$\{\{ github.workflow_sha \}\}/);
+  assert.ok(signer.indexOf("-PayloadDirectory signed-payload") < signer.indexOf("scripts/package-windows-desktop.sh"));
+  assert.ok(signer.indexOf("scripts/package-windows-desktop.sh") < signer.indexOf("-FilePath"));
+  assert.ok(signer.indexOf("-ExpectedThumbprint") < signer.indexOf("Sign artifacts (minisign)"));
+  assert.ok(!release.includes("secrets.SIGNPATH_API_TOKEN"));
+  const attestation = job(release, "attest-signing-contract");
+  const context = { github: { repository: "esengine/DeepSeek-Reasonix" }, inputs: { signing_preflight: true, orchestrated: false },
+    needs: { "signing-contract": { result: "success" }, build: { result: "success" }, "windows-sign": { result: "success" } } };
+  assert.equal(condition(attestation, context), true);
+  for (const result of ["failure", "cancelled", "skipped"]) {
+    assert.equal(condition(attestation, { ...context, needs: { ...context.needs, "windows-sign": { result } } }), false);
+  }
 });
 
 test("reuse never moves artifact verification past public mutation or trusts candidate scripts", () => {
