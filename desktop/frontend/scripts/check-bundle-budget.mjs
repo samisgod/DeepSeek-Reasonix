@@ -486,6 +486,13 @@ const rawInitialBytes = [...initialJS, ...initialCSS, ...appShellCSS]
 // on this toolchain (+1140 B, 0.055% over that combined base). Retain 0.10 KiB
 // headroom at the next one-decimal ceiling; gzip, CSS, and chunk limits are
 // unchanged.
-const rawInitialBudgetKiB = 2_026.9;
+// The credential-encryption settings page and its startup unlock prompt add
+// 4861 B (0.234%) over that measured base. The prompt loads as its own chunk
+// and reuses the shared modal/input recipes, so the startup increase is the
+// eager English dictionary plus the bounded unlock wiring (overlay state,
+// startup probe, and the deferred app-shell rules for the prompt). Retain the
+// next one-decimal ceiling with bounded cross-platform producer headroom;
+// gzip, CSS, and chunk limits are unchanged.
+const rawInitialBudgetKiB = 2_031.8;
 assertBudget("initial raw JavaScript and CSS", rawInitialBytes, rawInitialBudgetKiB * 1024);
 assertBudget("largest initial JavaScript chunk raw", largestInitialJSRaw, 1_000 * 1024);

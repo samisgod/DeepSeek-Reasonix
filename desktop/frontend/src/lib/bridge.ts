@@ -32,6 +32,7 @@ import type {
   SessionRef,
   SessionSelector,
   ComposerTarget,
+  VaultSettingsView,
   WorkspaceSessionPage,
   WorkspaceSnapshot,
 } from "../generated/desktopContract.generated";
@@ -802,6 +803,12 @@ export interface AppBindings extends AttachmentBindings, SessionExportBindings, 
   OpenUserConfigPath?(): Promise<void>;
   ReloadUserConfig?(): Promise<{ configWarnings?: string[]; configWarningsRevision?: number; configPath?: string } | null>;
   StorageSettings(): Promise<{ defaultWorkspace: string; statePath: string; cachePath: string; extensionsPath: string }>;
+  VaultSettings(): Promise<VaultSettingsView>;
+  SetVaultPassword(password: string): Promise<VaultSettingsView>;
+  ChangeVaultPassword(current: string, next: string): Promise<VaultSettingsView>;
+  UnlockVault(password: string): Promise<VaultSettingsView>;
+  LockVault(): Promise<VaultSettingsView>;
+  DisableVault(password: string): Promise<VaultSettingsView>;
   NeedsOnboarding(): Promise<boolean>;
   ConnectKey(apiKey: string): Promise<string>;
   // Crash overlay "Send report" (desktop/crash_app.go): scrubs user paths, attaches
@@ -1408,6 +1415,9 @@ function makeMockApp(): MockAppBindings {
     checks: [],
     actions,
   });
+  // mockVault mirrors the host's master-password state so the settings page is
+  // exercisable without a real credential store.
+  const mockVault = { configured: false, unlocked: false, path: "/mock/.reasonix/.env", minLength: 8 };
   const scenario = mockScenario();
   // Both bridge families publish into the same catalog, as ListTabs does in
   // the desktop backend. A remote event is not a second source of tab state.
@@ -4725,6 +4735,22 @@ function makeMockApp(): MockAppBindings {
     },
     ...makeMockModelSettingsBindings(settings, loadMockProviderCatalog, mockProviderPresetViews),
     async StorageSettings() { return { defaultWorkspace: cwd, statePath: `${cwd}/.reasonix`, cachePath: `${cwd}/.reasonix/cache`, extensionsPath: `${cwd}/.reasonix/plugins` }; },
+    async VaultSettings() { return { ...mockVault }; },
+    async SetVaultPassword(password: string) {
+      if (mockVault.configured) throw new Error("master password is already enabled");
+      if (password.length < mockVault.minLength) throw new Error(`master password must be at least ${mockVault.minLength} characters`);
+      mockVault.configured = true; mockVault.unlocked = true;
+      return { ...mockVault };
+    },
+    async ChangeVaultPassword(_current: string, next: string) {
+      if (!mockVault.configured) throw new Error("master password is not enabled");
+      if (next.length < mockVault.minLength) throw new Error(`master password must be at least ${mockVault.minLength} characters`);
+      mockVault.unlocked = true;
+      return { ...mockVault };
+    },
+    async UnlockVault(_password: string) { mockVault.unlocked = true; return { ...mockVault }; },
+    async LockVault() { mockVault.unlocked = false; return { ...mockVault }; },
+    async DisableVault(_password: string) { mockVault.configured = false; mockVault.unlocked = false; return { ...mockVault }; },
     async HooksSettings(scope: string) {
       const key = scope === "project" ? "project" : "global";
       return JSON.parse(JSON.stringify(hookSettings[key])) as HooksSettingsView;

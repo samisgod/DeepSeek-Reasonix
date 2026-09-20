@@ -1,7 +1,7 @@
 import { app, clipboard, dialog, ipcMain, net, protocol, screen, session, shell } from "electron";
 import { readdirSync } from "node:fs";
 import { homedir } from "node:os";
-import { join } from "node:path";
+import { dirname, join, resolve } from "node:path";
 import { IPC, type BrowserTakeoverKind } from "../shared/ipc.js";
 import { ActionExecutor } from "./browser/actions.js";
 import { DocumentRegistry } from "./browser/documents.js";
@@ -58,7 +58,25 @@ app.setName("Reasonix");
 applyAppUserModelId(app, process.platform);
 registerTaskbarRelaunch(app, process.platform, process.execPath, app.isPackaged);
 const dev = (process.env.REASONIX_DEV ?? "").trim() !== "";
-const home = reasonixHome({ env: process.env, platform: process.platform, homedir, cwd: () => process.cwd(), });
+// Portable mode keeps its marker and data folder beside the Reasonix Go binary,
+// and the service derives its own data home from its executable. The shell must
+// therefore locate the service it supervises before it resolves the home, so
+// both ends report the same `hello.instance.home` instead of failing the
+// handshake with `instance_mismatch`.
+const serviceLookup = resolveServiceBinary({
+  env: process.env,
+  platform: process.platform,
+  execPath: process.execPath,
+  resourcesPath: process.resourcesPath,
+});
+const serviceBinary = serviceLookup.binary;
+const home = reasonixHome({
+  env: process.env,
+  platform: process.platform,
+  homedir,
+  cwd: () => process.cwd(),
+  programDir: dirname(resolve(serviceBinary)),
+});
 if (home === "") {
   console.error("reasonix-desktop-shell: cannot resolve the Reasonix data home (set REASONIX_HOME)");
   app.exit(1);
@@ -122,13 +140,6 @@ function bootstrap(dataHome: string): void {
   const zoomStore = new AppZoomStore(join(dataHome, "electron-app-zoom.json"), join(dataHome, "desktop-zoom.json"));
   const icons = iconCandidates({ platform: process.platform, appPath: app.getAppPath(), resourcesPath: process.resourcesPath, packaged: app.isPackaged });
   const windowIcon = process.platform === "darwin" ? undefined : (firstExisting(icons.window) ?? undefined);
-  const serviceLookup = resolveServiceBinary({
-    env: process.env,
-    platform: process.platform,
-    execPath: process.execPath,
-    resourcesPath: process.resourcesPath,
-  });
-  const serviceBinary = serviceLookup.binary;
 
   let shellBuild = { version: buildVersion, channel: "", commit: "" };
   try {

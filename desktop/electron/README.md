@@ -127,6 +127,7 @@ Environment:
 | --- | --- |
 | `REASONIX_DESKTOP_SERVICE` | path of the Go service binary (packaged default: `resources/service/reasonix-desktop[.exe]`) |
 | `REASONIX_HOME` | data home, resolved exactly like `internal/config.ReasonixHomeDir` and sent in `hello.instance.home` |
+| `REASONIX_PORTABLE`, `REASONIX_PORTABLE_DIR` | portable mode, mirrored from `internal/config/portable.go` against the directory of the Go service binary; see [Configuration Paths](../../docs/CONFIG_PATHS.md#portable-installs) |
 | `REASONIX_DEV` | skips the single-instance lock and marks the instance as `dev` |
 | `REASONIX_ELECTRON_DEV_URL` | loads this URL instead of `reasonix://app/index.html` |
 | `REASONIX_FRONTEND_DIST` | overrides the directory served under `reasonix://app/` |

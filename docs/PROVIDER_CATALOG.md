@@ -138,3 +138,18 @@ no unverified reasoning overrides are added. These are protocol presets, not
 certification of every model's agent/tool/reasoning capabilities. Model discovery,
 tool calls and thinking require authenticated platform verification; none was
 performed in this batch. Icons use the existing pinned LobeHub MIT source.
+
+### CommandCode
+
+Added three route templates for the CommandCode Provider API
+(https://commandcode.ai/provider): `commandcode-chat` (Chat Completions),
+`commandcode-anthropic` (Anthropic Messages) and `commandcode-responses`
+(Responses). All three share the base URL
+`https://api.commandcode.ai/provider/v1` and Bearer authentication, and expose a
+`GET /provider/v1/models` discovery endpoint. The gateway binds endpoints to
+model families — Claude models must use `/messages` while OpenAI and
+open-weight models use `/chat/completions` or `/responses` — so each format is
+a separate connection. The Responses route is marked stateless. Model
+identifiers copy the published registry
+(https://commandcode.ai/docs/reference/cli/models); no live authenticated
+request was performed, so treat the curated lists as editable starting points.

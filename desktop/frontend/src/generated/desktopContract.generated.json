@@ -2237,6 +2237,36 @@
     },
     {
       "cancellation": "before-dispatch",
+      "domain": "desktop/vault_settings_app.go",
+      "name": "ChangeVaultPassword",
+      "owner": "App.ChangeVaultPassword",
+      "params": [
+        {
+          "kind": "string"
+        },
+        {
+          "kind": "string"
+        }
+      ],
+      "result": {
+        "kind": "object",
+        "ref": "main.VaultSettingsView"
+      },
+      "returnsError": true,
+      "scope": {
+        "inputs": [
+          "current",
+          "next"
+        ],
+        "kind": "owner-inputs",
+        "resolver": "App.ChangeVaultPassword"
+      },
+      "sources": [
+        "desktop/vault_settings_app.go"
+      ]
+    },
+    {
+      "cancellation": "before-dispatch",
       "domain": "desktop/session_preparation.go",
       "name": "CheckHistoricalSourceUpdate",
       "owner": "App.CheckHistoricalSourceUpdate",
@@ -3860,6 +3890,32 @@
       },
       "sources": [
         "desktop/theme_app.go"
+      ]
+    },
+    {
+      "cancellation": "before-dispatch",
+      "domain": "desktop/vault_settings_app.go",
+      "name": "DisableVault",
+      "owner": "App.DisableVault",
+      "params": [
+        {
+          "kind": "string"
+        }
+      ],
+      "result": {
+        "kind": "object",
+        "ref": "main.VaultSettingsView"
+      },
+      "returnsError": true,
+      "scope": {
+        "inputs": [
+          "password"
+        ],
+        "kind": "owner-inputs",
+        "resolver": "App.DisableVault"
+      },
+      "sources": [
+        "desktop/vault_settings_app.go"
       ]
     },
     {
@@ -7643,6 +7699,25 @@
       },
       "sources": [
         "desktop/session_history_service.go"
+      ]
+    },
+    {
+      "cancellation": "before-dispatch",
+      "domain": "desktop/vault_settings_app.go",
+      "name": "LockVault",
+      "owner": "App.LockVault",
+      "params": [],
+      "result": {
+        "kind": "object",
+        "ref": "main.VaultSettingsView"
+      },
+      "scope": {
+        "inputs": [],
+        "kind": "owner-state",
+        "resolver": "App.LockVault"
+      },
+      "sources": [
+        "desktop/vault_settings_app.go"
       ]
     },
     {
@@ -17975,6 +18050,32 @@
     },
     {
       "cancellation": "before-dispatch",
+      "domain": "desktop/vault_settings_app.go",
+      "name": "SetVaultPassword",
+      "owner": "App.SetVaultPassword",
+      "params": [
+        {
+          "kind": "string"
+        }
+      ],
+      "result": {
+        "kind": "object",
+        "ref": "main.VaultSettingsView"
+      },
+      "returnsError": true,
+      "scope": {
+        "inputs": [
+          "password"
+        ],
+        "kind": "owner-inputs",
+        "resolver": "App.SetVaultPassword"
+      },
+      "sources": [
+        "desktop/vault_settings_app.go"
+      ]
+    },
+    {
+      "cancellation": "before-dispatch",
       "domain": "desktop/settings_app.go",
       "name": "SetVisionModel",
       "owner": "App.SetVisionModel",
@@ -20135,6 +20236,32 @@
     },
     {
       "cancellation": "before-dispatch",
+      "domain": "desktop/vault_settings_app.go",
+      "name": "UnlockVault",
+      "owner": "App.UnlockVault",
+      "params": [
+        {
+          "kind": "string"
+        }
+      ],
+      "result": {
+        "kind": "object",
+        "ref": "main.VaultSettingsView"
+      },
+      "returnsError": true,
+      "scope": {
+        "inputs": [
+          "password"
+        ],
+        "kind": "owner-inputs",
+        "resolver": "App.UnlockVault"
+      },
+      "sources": [
+        "desktop/vault_settings_app.go"
+      ]
+    },
+    {
+      "cancellation": "before-dispatch",
       "domain": "desktop/pinned_files.go",
       "name": "UnpinFileForTab",
       "owner": "App.UnpinFileForTab",
@@ -20393,6 +20520,25 @@
       },
       "sources": [
         "desktop/stats_app.go"
+      ]
+    },
+    {
+      "cancellation": "before-dispatch",
+      "domain": "desktop/vault_settings_app.go",
+      "name": "VaultSettings",
+      "owner": "App.VaultSettings",
+      "params": [],
+      "result": {
+        "kind": "object",
+        "ref": "main.VaultSettingsView"
+      },
+      "scope": {
+        "inputs": [],
+        "kind": "owner-state",
+        "resolver": "App.VaultSettings"
+      },
+      "sources": [
+        "desktop/vault_settings_app.go"
       ]
     },
     {
@@ -41930,6 +42076,34 @@
           "optional": true,
           "type": {
             "kind": "string"
+          }
+        }
+      ]
+    },
+    "main.VaultSettingsView": {
+      "fields": [
+        {
+          "name": "configured",
+          "type": {
+            "kind": "boolean"
+          }
+        },
+        {
+          "name": "unlocked",
+          "type": {
+            "kind": "boolean"
+          }
+        },
+        {
+          "name": "path",
+          "type": {
+            "kind": "string"
+          }
+        },
+        {
+          "name": "minLength",
+          "type": {
+            "kind": "integer"
           }
         }
       ]

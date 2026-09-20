@@ -3,7 +3,7 @@
 
 export const DESKTOP_PROTOCOL_VERSION = 11;
 
-export const DESKTOP_CONTRACT_DIGEST = "sha256:48292bab8d43e23c088e742b212d2ec79091d693db90cec31a0037a16f7db18f";
+export const DESKTOP_CONTRACT_DIGEST = "sha256:7b2f523e98585b9a3233df1420e932c9be4fdae018d3510f9bcd4a57d7c385fb";
 
 export const DESKTOP_COMMANDS = [
   "AIRenameSession",
@@ -86,6 +86,7 @@ export const DESKTOP_COMMANDS = [
   "CapabilityDiagnostics",
   "CaptureAttachmentTarget",
   "CaptureInboxTarget",
+  "ChangeVaultPassword",
   "CheckHistoricalSourceUpdate",
   "CheckRemotePlatform",
   "CheckUpdate",
@@ -150,6 +151,7 @@ export const DESKTOP_COMMANDS = [
   "DesktopStartupSettings",
   "DiagnoseBotConnection",
   "DisableThemePack",
+  "DisableVault",
   "DiscardSessionDraft",
   "DisconnectRemoteHost",
   "DismissSessionDraft",
@@ -289,6 +291,7 @@ export const DESKTOP_COMMANDS = [
   "ListWorkspaces",
   "LocateSessionMessageForTab",
   "LocateSessionMessageForTarget",
+  "LockVault",
   "LookupInboxFollowupForTarget",
   "MCPAppCallToolForTab",
   "MCPAppResourceDigest",
@@ -673,6 +676,7 @@ export const DESKTOP_COMMANDS = [
   "SetToolApprovalModeForTab",
   "SetTopicPinned",
   "SetTrayLocale",
+  "SetVaultPassword",
   "SetVisionModel",
   "SetWebSearchModel",
   "SetWorkspaceVisible",
@@ -745,6 +749,7 @@ export const DESKTOP_COMMANDS = [
   "TurnCheckLog",
   "TurnEventsForTab",
   "UndoRewindForTab",
+  "UnlockVault",
   "UnpinFileForTab",
   "UpdateInboxItem",
   "UpdateMCPServer",
@@ -754,6 +759,7 @@ export const DESKTOP_COMMANDS = [
   "UpdateSubagentProfile",
   "UpgradeDeepSeekProviderAccess",
   "UsageStats",
+  "VaultSettings",
   "Version",
   "WorkspaceChangeDetail",
   "WorkspaceChanges",
@@ -4728,6 +4734,13 @@ export interface UsageStatsRequest {
   source?: string;
 }
 
+export interface VaultSettingsView {
+  configured: boolean;
+  unlocked: boolean;
+  path: string;
+  minLength: number;
+}
+
 export interface WeixinBotView {
   enabled: boolean;
   accountId: string;
@@ -5678,6 +5691,7 @@ export interface GeneratedDesktopCommands {
   CapabilityDiagnostics(arg0: boolean): Promise<Report>;
   CaptureAttachmentTarget(arg0: ComposerTarget): Promise<AttachmentTargetView>;
   CaptureInboxTarget(arg0: string, arg1: string): Promise<InboxTargetView>;
+  ChangeVaultPassword(arg0: string, arg1: string): Promise<VaultSettingsView>;
   CheckHistoricalSourceUpdate(arg0: SessionSelector): Promise<HistoricalSourceUpdateView>;
   CheckRemotePlatform(arg0: string): Promise<void>;
   CheckUpdate(arg0: string): Promise<UpdateInfo | null>;
@@ -5742,6 +5756,7 @@ export interface GeneratedDesktopCommands {
   DesktopStartupSettings(): Promise<DesktopStartupSettingsView>;
   DiagnoseBotConnection(arg0: string): Promise<BotConnectionDiagnostic>;
   DisableThemePack(): Promise<void>;
+  DisableVault(arg0: string): Promise<VaultSettingsView>;
   DiscardSessionDraft(arg0: string, arg1: number): Promise<void>;
   DisconnectRemoteHost(arg0: string): Promise<void>;
   DismissSessionDraft(arg0: string): Promise<void>;
@@ -5881,6 +5896,7 @@ export interface GeneratedDesktopCommands {
   ListWorkspaces(): Promise<WorkspaceMeta[]>;
   LocateSessionMessageForTab(arg0: string, arg1: string, arg2: number): Promise<MessageLocation>;
   LocateSessionMessageForTarget(arg0: SessionSelector, arg1: string, arg2: number): Promise<MessageLocation>;
+  LockVault(): Promise<VaultSettingsView>;
   LookupInboxFollowupForTarget(arg0: InboxTargetView, arg1: string): Promise<InboxReceiptView>;
   MCPAppCallToolForTab(arg0: string, arg1: string, arg2: string, arg3: unknown): Promise<string>;
   MCPAppResourceDigest(arg0: string): Promise<string>;
@@ -6265,6 +6281,7 @@ export interface GeneratedDesktopCommands {
   SetToolApprovalModeForTab(arg0: string, arg1: string): Promise<string[]>;
   SetTopicPinned(arg0: string, arg1: boolean): Promise<void>;
   SetTrayLocale(arg0: string): Promise<void>;
+  SetVaultPassword(arg0: string): Promise<VaultSettingsView>;
   SetVisionModel(arg0: string): Promise<void>;
   SetWebSearchModel(arg0: string): Promise<void>;
   SetWorkspaceVisible(arg0: string, arg1: boolean): Promise<void>;
@@ -6337,6 +6354,7 @@ export interface GeneratedDesktopCommands {
   TurnCheckLog(arg0: string, arg1: string, arg2: string, arg3: string): Promise<TurnCheckLogView | null>;
   TurnEventsForTab(arg0: string, arg1: number): Promise<TurnEventReplayView>;
   UndoRewindForTab(arg0: string, arg1: string): Promise<RewindResultView>;
+  UnlockVault(arg0: string): Promise<VaultSettingsView>;
   UnpinFileForTab(arg0: string, arg1: string): Promise<void>;
   UpdateInboxItem(arg0: string, arg1: string, arg2: string, arg3: string): Promise<void>;
   UpdateMCPServer(arg0: string, arg1: MCPServerInput): Promise<void>;
@@ -6346,6 +6364,7 @@ export interface GeneratedDesktopCommands {
   UpdateSubagentProfile(arg0: string, arg1: string, arg2: SubagentProfileInput): Promise<void>;
   UpgradeDeepSeekProviderAccess(arg0: string): Promise<string>;
   UsageStats(arg0: UsageStatsRequest): Promise<UsageStatsRange>;
+  VaultSettings(): Promise<VaultSettingsView>;
   Version(): Promise<string>;
   WorkspaceChangeDetail(arg0: string, arg1: string): Promise<WorkspaceChangeDetailView>;
   WorkspaceChanges(arg0: string): Promise<WorkspaceChangesView>;

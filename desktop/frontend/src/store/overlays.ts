@@ -23,6 +23,9 @@ export type OverlayState = {
   takeoverDialogTab: string | null;
   reclaimBusyTab: string | null;
   providerSetupNeeded: boolean;
+  // True while the startup probe wants the master-password unlock dialog; the
+  // dialog itself waits for the startup splash to finish before it renders.
+  vaultUnlockOpen: boolean;
   setPaletteOpen: Dispatch<SetStateAction<boolean>>;
   setPaletteSessions: Dispatch<SetStateAction<SessionMeta[]>>;
   setPaletteExtensionActions: Dispatch<SetStateAction<ExtensionActionView[]>>;
@@ -36,6 +39,7 @@ export type OverlayState = {
   setTakeoverDialogTab: Dispatch<SetStateAction<string | null>>;
   setReclaimBusyTab: Dispatch<SetStateAction<string | null>>;
   setProviderSetupNeeded: Dispatch<SetStateAction<boolean>>;
+  setVaultUnlockOpen: Dispatch<SetStateAction<boolean>>;
 };
 
 export const useOverlayStore = create<OverlayState>((set) => ({
@@ -52,6 +56,7 @@ export const useOverlayStore = create<OverlayState>((set) => ({
   takeoverDialogTab: null,
   reclaimBusyTab: null,
   providerSetupNeeded: false,
+  vaultUnlockOpen: false,
   setPaletteOpen: (update) => set((s) => ({ paletteOpen: applySetState(s.paletteOpen, update) })),
   setPaletteSessions: (update) => set((s) => ({ paletteSessions: applySetState(s.paletteSessions, update) })),
   setPaletteExtensionActions: (update) => set((s) => ({ paletteExtensionActions: applySetState(s.paletteExtensionActions, update) })),
@@ -65,4 +70,5 @@ export const useOverlayStore = create<OverlayState>((set) => ({
   setTakeoverDialogTab: (update) => set((s) => ({ takeoverDialogTab: applySetState(s.takeoverDialogTab, update) })),
   setReclaimBusyTab: (update) => set((s) => ({ reclaimBusyTab: applySetState(s.reclaimBusyTab, update) })),
   setProviderSetupNeeded: (update) => set((s) => ({ providerSetupNeeded: applySetState(s.providerSetupNeeded, update) })),
+  setVaultUnlockOpen: (update) => set((s) => ({ vaultUnlockOpen: applySetState(s.vaultUnlockOpen, update) })),
 }));

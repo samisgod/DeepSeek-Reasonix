@@ -59,6 +59,10 @@ const (
 
 	// minMasterPasswordLen is the shortest accepted master password.
 	minMasterPasswordLen = 8
+
+	// MinMasterPasswordLength is the exported minimum a settings UI can mirror
+	// when validating a freshly chosen master password.
+	MinMasterPasswordLength = minMasterPasswordLen
 )
 
 var (

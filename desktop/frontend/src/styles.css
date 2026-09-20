@@ -36028,6 +36028,24 @@ body > .mermaid-diagram--fullscreen {
   border-color: var(--accent);
   box-shadow: 0 0 0 2px color-mix(in srgb, var(--accent) 22%, transparent);
 }
+/* Vault unlock (startup): masks provider keys and bot secrets until the master
+   password is verified. Reuses the shared modal surface and input recipe so no
+   bespoke chrome enters the deferred app-shell stylesheet. */
+.vault-unlock-backdrop {
+  --reasonix-draggable: no-drag;
+  z-index: var(--z-modal);
+}
+.vault-unlock-dialog {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+.vault-unlock-dialog__hint {
+  margin: 0;
+  color: var(--fg-dim);
+  font-size: var(--text-xs);
+  line-height: 1.5;
+}
 .remote-connection-error-dialog__summary {
   margin: 0;
   color: var(--fg-dim);

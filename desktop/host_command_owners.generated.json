@@ -1176,6 +1176,21 @@
       ]
     }
   },
+  "ChangeVaultPassword": {
+    "domain": "desktop/vault_settings_app.go",
+    "owner": "App.ChangeVaultPassword",
+    "sources": [
+      "desktop/vault_settings_app.go"
+    ],
+    "scope": {
+      "kind": "owner-inputs",
+      "resolver": "App.ChangeVaultPassword",
+      "inputs": [
+        "current",
+        "next"
+      ]
+    }
+  },
   "CheckHistoricalSourceUpdate": {
     "domain": "desktop/session_preparation.go",
     "owner": "App.CheckHistoricalSourceUpdate",
@@ -2085,6 +2100,20 @@
       "kind": "owner-state",
       "resolver": "App.DisableThemePack",
       "inputs": []
+    }
+  },
+  "DisableVault": {
+    "domain": "desktop/vault_settings_app.go",
+    "owner": "App.DisableVault",
+    "sources": [
+      "desktop/vault_settings_app.go"
+    ],
+    "scope": {
+      "kind": "owner-inputs",
+      "resolver": "App.DisableVault",
+      "inputs": [
+        "password"
+      ]
     }
   },
   "DiscardSessionDraft": {
@@ -4038,6 +4067,18 @@
         "messageID",
         "snapshot"
       ]
+    }
+  },
+  "LockVault": {
+    "domain": "desktop/vault_settings_app.go",
+    "owner": "App.LockVault",
+    "sources": [
+      "desktop/vault_settings_app.go"
+    ],
+    "scope": {
+      "kind": "owner-state",
+      "resolver": "App.LockVault",
+      "inputs": []
     }
   },
   "LookupInboxFollowupForTarget": {
@@ -9654,6 +9695,20 @@
       ]
     }
   },
+  "SetVaultPassword": {
+    "domain": "desktop/vault_settings_app.go",
+    "owner": "App.SetVaultPassword",
+    "sources": [
+      "desktop/vault_settings_app.go"
+    ],
+    "scope": {
+      "kind": "owner-inputs",
+      "resolver": "App.SetVaultPassword",
+      "inputs": [
+        "password"
+      ]
+    }
+  },
   "SetVisionModel": {
     "domain": "desktop/settings_app.go",
     "owner": "App.SetVisionModel",
@@ -10752,6 +10807,20 @@
       ]
     }
   },
+  "UnlockVault": {
+    "domain": "desktop/vault_settings_app.go",
+    "owner": "App.UnlockVault",
+    "sources": [
+      "desktop/vault_settings_app.go"
+    ],
+    "scope": {
+      "kind": "owner-inputs",
+      "resolver": "App.UnlockVault",
+      "inputs": [
+        "password"
+      ]
+    }
+  },
   "UnpinFileForTab": {
     "domain": "desktop/pinned_files.go",
     "owner": "App.UnpinFileForTab",
@@ -10886,6 +10955,18 @@
       "inputs": [
         "req"
       ]
+    }
+  },
+  "VaultSettings": {
+    "domain": "desktop/vault_settings_app.go",
+    "owner": "App.VaultSettings",
+    "sources": [
+      "desktop/vault_settings_app.go"
+    ],
+    "scope": {
+      "kind": "owner-state",
+      "resolver": "App.VaultSettings",
+      "inputs": []
     }
   },
   "Version": {

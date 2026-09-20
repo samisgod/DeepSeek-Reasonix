@@ -6,6 +6,9 @@ import { StartupSplash } from "../components/StartupSplash";
 import { ManagementSurface } from "../components/ManagementSurface";
 
 const HistoryPanel = lazy(() => import("../components/HistoryPanel").then((module) => ({ default: module.HistoryPanel })));
+// The startup unlock prompt is fetched on mount but stays out of the initial
+// bundle; only a locked credential store ever renders it.
+const VaultUnlockDialog = lazy(() => import("../components/VaultUnlockDialog").then((module) => ({ default: module.VaultUnlockDialog })));
 const SessionRecoveryVersionsHost = lazy(() => import("../components/SessionRecoveryVersionsHost").then((module) => ({ default: module.SessionRecoveryVersionsHost })));
 const loadSettingsPage = () => import("../components/SettingsPanelEntry").then((module) => ({ default: module.SettingsPanel }));
 const loadTrashPage = () => import("../components/TrashPage").then((module) => ({ default: module.TrashPage }));
@@ -45,6 +48,7 @@ export function AppOverlayHost({ history, recovery, settings, trash, automation,
         surfaceProps={{ ...settings.view, ...settings.commands }} />}
       <RemoteHostKeyDialog />
       <RemoteSecretDialog />
+      <Suspense fallback={null}><VaultUnlockDialog /></Suspense>
       {palette && <Suspense fallback={null}><CommandPalette {...palette.view} {...palette.commands} /></Suspense>}
       <ShortcutsCheatsheet {...shortcuts.view} {...shortcuts.commands} />
       {startup && <StartupSplash {...startup.view} {...startup.commands} />}

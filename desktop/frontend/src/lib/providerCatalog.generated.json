@@ -66,6 +66,87 @@
         }
       }
     },
+    "commandcode-anthropic": {
+      "brandId": "commandcode",
+      "brandLabel": "CommandCode",
+      "region": "global",
+      "product": "api",
+      "format": "anthropic",
+      "baseUrl": "https://api.commandcode.ai/provider/v1",
+      "protocols": {
+        "anthropic": {
+          "baseUrl": "https://api.commandcode.ai/provider/v1",
+          "source": "https://commandcode.ai/provider",
+          "checkedOn": "2026-09-20",
+          "authHeader": true
+        },
+        "openai": {
+          "baseUrl": "https://api.commandcode.ai/provider/v1",
+          "source": "https://commandcode.ai/provider",
+          "checkedOn": "2026-09-20"
+        },
+        "responses": {
+          "baseUrl": "https://api.commandcode.ai/provider/v1",
+          "source": "https://commandcode.ai/provider",
+          "checkedOn": "2026-09-20",
+          "responsesMode": "stateless"
+        }
+      }
+    },
+    "commandcode-chat": {
+      "brandId": "commandcode",
+      "brandLabel": "CommandCode",
+      "region": "global",
+      "product": "api",
+      "format": "openai",
+      "baseUrl": "https://api.commandcode.ai/provider/v1",
+      "protocols": {
+        "anthropic": {
+          "baseUrl": "https://api.commandcode.ai/provider/v1",
+          "source": "https://commandcode.ai/provider",
+          "checkedOn": "2026-09-20",
+          "authHeader": true
+        },
+        "openai": {
+          "baseUrl": "https://api.commandcode.ai/provider/v1",
+          "source": "https://commandcode.ai/provider",
+          "checkedOn": "2026-09-20"
+        },
+        "responses": {
+          "baseUrl": "https://api.commandcode.ai/provider/v1",
+          "source": "https://commandcode.ai/provider",
+          "checkedOn": "2026-09-20",
+          "responsesMode": "stateless"
+        }
+      }
+    },
+    "commandcode-responses": {
+      "brandId": "commandcode",
+      "brandLabel": "CommandCode",
+      "region": "global",
+      "product": "api",
+      "format": "responses",
+      "baseUrl": "https://api.commandcode.ai/provider/v1",
+      "protocols": {
+        "anthropic": {
+          "baseUrl": "https://api.commandcode.ai/provider/v1",
+          "source": "https://commandcode.ai/provider",
+          "checkedOn": "2026-09-20",
+          "authHeader": true
+        },
+        "openai": {
+          "baseUrl": "https://api.commandcode.ai/provider/v1",
+          "source": "https://commandcode.ai/provider",
+          "checkedOn": "2026-09-20"
+        },
+        "responses": {
+          "baseUrl": "https://api.commandcode.ai/provider/v1",
+          "source": "https://commandcode.ai/provider",
+          "checkedOn": "2026-09-20",
+          "responsesMode": "stateless"
+        }
+      }
+    },
     "deepseek-chat": {
       "brandId": "deepseek",
       "brandLabel": "DeepSeek",

@@ -33,6 +33,25 @@
       "checkedOn": "2026-09-07"
     }
   },
+  "commandcode|global|api": {
+    "openai": {
+      "baseUrl": "https://api.commandcode.ai/provider/v1",
+      "source": "https://commandcode.ai/provider",
+      "checkedOn": "2026-09-20"
+    },
+    "anthropic": {
+      "baseUrl": "https://api.commandcode.ai/provider/v1",
+      "source": "https://commandcode.ai/provider",
+      "checkedOn": "2026-09-20",
+      "authHeader": true
+    },
+    "responses": {
+      "baseUrl": "https://api.commandcode.ai/provider/v1",
+      "source": "https://commandcode.ai/provider",
+      "checkedOn": "2026-09-20",
+      "responsesMode": "stateless"
+    }
+  },
   "deepseek|global|api": {
     "anthropic": {
       "baseUrl": "https://api.deepseek.com/anthropic",

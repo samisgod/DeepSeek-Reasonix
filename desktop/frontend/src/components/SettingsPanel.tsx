@@ -108,6 +108,7 @@ const MemorySettingsPage = lazy(() => import("./MemoryPanel").then((module) => (
 const SubagentsSettingsPage = lazy(() => import("./SubagentsPanel").then((module) => ({ default: module.SubagentsSettingsPage })));
 const DiagnosticsSettingsPage = lazy(() => import("./DiagnosticsSettingsPage").then((module) => ({ default: module.DiagnosticsSettingsPage })));
 const StorageSettingsPage = lazy(() => import("./StorageSettingsPage").then((module) => ({ default: module.StorageSettingsPage })));
+const VaultSettingsPage = lazy(() => import("./VaultSettingsPage").then((module) => ({ default: module.VaultSettingsPage })));
 const BrowserControlSettingsPage = lazy(() => import("./BrowserControlSettingsPage").then((module) => ({ default: module.BrowserControlSettingsPage })));
 const UsageStatsPanel = lazy(() => import("./UsageStatsPanel").then((module) => ({ default: module.UsageStatsPanel })));
 const QRCodeSVG = lazy(() => import("qrcode.react").then((module) => ({ default: module.QRCodeSVG })));
@@ -502,6 +503,7 @@ export function SettingsPanel({
                 )}
                 {tab === "storage" && <SettingsPageShell key={tab} s={s} tab={tab} busy={false} apply={apply}><Suspense fallback={lazySettingsPageFallback}><StorageSettingsPage /></Suspense></SettingsPageShell>}
                 {tab === "browser" && <SettingsPageShell key={tab} s={s} tab={tab} busy={false} apply={apply}><Suspense fallback={lazySettingsPageFallback}><BrowserControlSettingsPage /></Suspense></SettingsPageShell>}
+                {tab === "vault" && <SettingsPageShell key={tab} s={s} tab={tab} busy={false} apply={apply}><Suspense fallback={lazySettingsPageFallback}><VaultSettingsPage /></Suspense></SettingsPageShell>}
                 {tab === "updates" && s && (
                   <SettingsPageShell key={tab} s={s} tab={tab} busy={busy} apply={apply}>
                     <AboutSection
@@ -626,6 +628,7 @@ function settingsTabLabel(id: SettingsTab, t: ReturnType<typeof useT>): string {
     case "appearance": return t("settings.tab.appearance");
     case "storage": return t("settings.tab.storage");
     case "browser": return t("settings.tab.browser");
+    case "vault": return t("settings.tab.vault");
     case "updates":
       return t("settings.tab.updates");
   }
@@ -669,6 +672,7 @@ function settingsTabMeta(id: SettingsTab, s: SettingsView, t: ReturnType<typeof 
     case "appearance": return t("settings.appearanceMeta");
     case "storage": return t("settings.storageMeta");
     case "browser": return t("settings.browserMeta");
+    case "vault": return t("settings.vaultMeta");
     case "updates":
       return t("settings.updatesMeta");
   }
