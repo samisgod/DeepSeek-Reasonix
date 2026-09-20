@@ -1,6 +1,6 @@
 import { defaultSidebarWidth, SIDEBAR_MAX_WIDTH } from "../store/layout";
 import type { Translator } from "../lib/i18n";
-import type { Meta, TabMeta } from "../lib/types";
+import type { Meta, RemoteTabRefView, TabMeta } from "../lib/types";
 import type { SidebarImTopicSource } from "../app-runtime/sidebarImProjection";
 import type { useSessionBannerCommands } from "../app-runtime/useSessionBannerCommands";
 import type { useProjectTopicCommands } from "../app-runtime/useProjectTopicCommands";
@@ -9,6 +9,7 @@ import type { useShellGeometry } from "../app-runtime/useShellGeometry";
 import type { useAppShellStores } from "../app-runtime/useAppShellStores";
 import type { SessionStatusBannersProps } from "./SessionStatusBanners";
 import type { SidebarRegionProps } from "./SidebarRegion";
+import { sessionIdentityRoute } from "../lib/sessionIdentity";
 
 type BannerCommands = ReturnType<typeof useSessionBannerCommands>;
 type ShellStores = ReturnType<typeof useAppShellStores>;
@@ -25,15 +26,20 @@ export function buildSidebarRegionProps(input: {
   geometry: ReturnType<typeof useShellGeometry>;
   projectTree: {
     activeTab: TabMeta | undefined;
+    /** Owned by useActiveRemoteRef: this assembly must not rebuild it, because
+     *  the project tree keys its tree walks on the object's identity. */
+    activeRemote: RemoteTabRefView | undefined;
+    activeScope?: string;
+    activeWorkspaceRoot?: string;
     imTopicSources: Record<string, SidebarImTopicSource>;
     refreshSignal: number;
-    timeFilter: SidebarRegionProps["projectTree"]["timeFilter"];
-    onTimeFilterChange: SidebarRegionProps["projectTree"]["onTimeFilterChange"];
     searchExpanded: boolean;
     searchFocusSignal: number;
     showShortcutBadges: boolean;
     shortcutPlatform: SidebarRegionProps["projectTree"]["shortcutPlatform"];
     onVisibleTopicsChange: SidebarRegionProps["projectTree"]["onVisibleTopicsChange"];
+    draftSummaries: SidebarRegionProps["projectTree"]["draftSummaries"];
+    onOpenDraft: SidebarRegionProps["projectTree"]["onOpenDraft"];
   };
   topics: ProjectTopicCommands;
   commands: {
@@ -64,16 +70,19 @@ export function buildSidebarRegionProps(input: {
       onReset: () => geometry.setExpandedSidebarWidth(defaultSidebarWidth()),
     },
     projectTree: {
-      activeScope: input.projectTree.activeTab?.scope, activeWorkspaceRoot: input.projectTree.activeTab?.workspaceRoot,
-      activeTopicId: input.projectTree.activeTab?.topicId, activeSessionPath: input.projectTree.activeTab?.sessionPath,
-      activeRemote: input.projectTree.activeTab?.remote, imTopicSources: input.projectTree.imTopicSources, onOpenTopic: commands.onOpenTopic,
+      activeScope: input.projectTree.activeScope ?? input.projectTree.activeTab?.scope,
+      activeWorkspaceRoot: input.projectTree.activeWorkspaceRoot ?? input.projectTree.activeTab?.workspaceRoot,
+      activeTopicId: input.projectTree.activeTab?.topicId, activeSessionPath: sessionIdentityRoute(input.projectTree.activeTab),
+      activeRemote: input.projectTree.activeRemote,
+      imTopicSources: input.projectTree.imTopicSources, onOpenTopic: commands.onOpenTopic,
       onCreateTopic: topics.onCreateTopic, onCreateIsolatedWorktree: topics.onCreateIsolatedWorktree,
       onTopicsChanged: topics.refreshProjectsAndTabs, onRenameTopic: topics.renameTopic, refreshSignal: input.projectTree.refreshSignal,
       onAddProject: topics.onAddProject,
-      timeFilter: input.projectTree.timeFilter, onTimeFilterChange: input.projectTree.onTimeFilterChange,
       searchExpanded: input.projectTree.searchExpanded, searchFocusSignal: input.projectTree.searchFocusSignal,
       showShortcutBadges: input.projectTree.showShortcutBadges, shortcutPlatform: input.projectTree.shortcutPlatform,
       onVisibleTopicsChange: input.projectTree.onVisibleTopicsChange,
+      draftSummaries: input.projectTree.draftSummaries,
+      onOpenDraft: input.projectTree.onOpenDraft,
     },
   };
 }

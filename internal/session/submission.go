@@ -9,11 +9,13 @@ import (
 // SubmissionReceipt is host-only metadata in an optional event. Keeping it out
 // of provider.Message lets older strict message decoders read new sessions.
 type SubmissionReceipt struct {
-	SessionID    string `json:"sessionId"`
-	SubmissionID string `json:"submissionId"`
-	Fingerprint  string `json:"fingerprint"`
-	TurnID       string `json:"turnId"`
-	MessageID    string `json:"messageId"`
+	FingerprintVersion        int    `json:"fingerprintVersion,omitempty"`
+	AcceptedAttachmentDigests string `json:"acceptedAttachmentDigests,omitempty"`
+	SessionID                 string `json:"sessionId"`
+	SubmissionID              string `json:"submissionId"`
+	Fingerprint               string `json:"fingerprint"`
+	TurnID                    string `json:"turnId"`
+	MessageID                 string `json:"messageId"`
 }
 
 // Immutable indexes are shared by projection snapshots. Only admission clones
@@ -22,6 +24,12 @@ type SubmissionIndex struct {
 	byID      map[string]SubmissionReceipt
 	byTurn    map[string]SubmissionReceipt
 	byMessage map[string]SubmissionReceipt
+}
+
+// Lookup returns an immutable receipt from a query projection.
+func (index SubmissionIndex) Lookup(sessionID, submissionID string) (SubmissionReceipt, bool) {
+	receipt, ok := index.byID[sessionID+"\x00"+submissionID]
+	return receipt, ok
 }
 
 func attachSubmissionEntries(index SubmissionIndex, sessionID string, entries []PersistentMessage) {

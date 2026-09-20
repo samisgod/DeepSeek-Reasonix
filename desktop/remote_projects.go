@@ -92,7 +92,8 @@ type remoteTab struct {
 	attachedGen uint64
 	// Pending approval/ask frames are retained while the frontend surface is
 	// inactive. RemoteTabSnapshot replays them when that surface mounts again.
-	pendingEvents map[string]json.RawMessage
+	pendingEvents    map[string]json.RawMessage
+	persistenceExtra map[string]json.RawMessage
 
 	// Transient runtime state is projected into TabMeta even while this tab is
 	// inactive, matching the local tab strip's running/prompt/job indicators.
@@ -106,6 +107,9 @@ type remoteTab struct {
 	// rejected request cannot restore metadata over a newer user selection.
 	selectionRevision uint64
 	pendingSelection  *remoteTabPendingOpenSelection
+	// ownership fences the handback of this session's writer; see
+	// remoteTabOwnershipState in remote_tab_reclaim.go.
+	ownership remoteTabOwnershipState
 }
 
 type remoteTabRuntimeState struct {
@@ -294,7 +298,14 @@ func (a *App) commitRemoteTabOpenRegistration(registration *remoteTabOpenRegistr
 		if existing.session.newSession {
 			commitRemoteTabAttachRoute(existing, "", true)
 		} else if route := remoteSessionIdentityRoute(existing.session.path, existing.session.sessionID); route != "" {
+			// A ready tab commits the route ahead of its async /resume; gate
+			// commands until that resume settles. Re-selecting the confirmed
+			// current session is not a switch and must not enter the gate.
+			switching := existing.state == "ready" && existing.routing.currentPath != route
 			commitRemoteTabAttachRoute(existing, route, false)
+			if switching {
+				existing.routing.rehydratingPath = route
+			}
 		}
 		if existing.state == "ready" {
 			registration.selection.identityCommitted = true
@@ -468,13 +479,19 @@ func (a *App) restoreRemoteTabShells(f desktopTabsFile) {
 				}
 			}
 		}
-		title := strings.TrimSpace(entry.TopicTitle)
-		if title == "" {
-			title = remoteWorkspaceName(ws)
-		}
 		sessionName := strings.TrimSpace(entry.SessionName)
 		sessionPath := strings.TrimSpace(entry.SessionPath)
 		sessionID := strings.TrimSpace(entry.SessionID)
+		title := strings.TrimSpace(entry.TopicTitle)
+		// Older builds persisted the canonical session ID as the tab title, and
+		// a legacy row's name is its basename, which the sidebar shows as the
+		// title too. Both are opaque, so drop them once an ID is present.
+		if sessionID != "" && (title == sessionID || title == sessionName) {
+			title = ""
+		}
+		if title == "" {
+			title = remoteWorkspaceName(ws)
+		}
 		route := remoteSessionIdentityRoute(sessionPath, sessionID)
 		restored := &remoteTab{
 			id: id, ref: RemoteTabRef{HostID: hostID, Workspace: ws},
@@ -486,7 +503,7 @@ func (a *App) restoreRemoteTabShells(f desktopTabsFile) {
 				sessionID:  sessionID,
 				reset:      entry.SessionReset,
 			},
-			hostLabel: hostLabel, topicTitle: title, model: model,
+			hostLabel: hostLabel, topicTitle: title, model: model, persistenceExtra: cloneDesktopJSONFields(entry.extra),
 			routing: remoteTabSessionRouting{currentPath: route, running: map[string]bool{}},
 		}
 		restored.modelSeq = remoteTabModelSeq.Add(1)
@@ -556,33 +573,36 @@ func remoteTabMetaLocked(tab *remoteTab) TabMeta {
 	}
 	ref := tab.ref
 	return TabMeta{
-		ID:            tab.id,
-		Scope:         "project",
-		WorkspaceRoot: tab.ref.Workspace,
-		WorkspaceName: remoteWorkspaceName(tab.ref.Workspace),
-		TopicID:       remoteTabTopicID(tab),
-		TopicTitle:    tab.topicTitle,
-		SessionPath:   tab.session.path,
-		SessionID:     tab.session.sessionID,
-		Label:         label,
-		Mode:          "normal",
-		Active:        true,
-		Cwd:           tab.ref.Workspace,
-		Remote:        &ref,
-		RemoteState:   tab.state,
+		ID:                tab.id,
+		Scope:             "project",
+		WorkspaceRoot:     tab.ref.Workspace,
+		WorkspaceName:     remoteWorkspaceName(tab.ref.Workspace),
+		TopicID:           remoteTabTopicID(tab),
+		TopicTitle:        tab.topicTitle,
+		SessionPath:       tab.session.path,
+		SessionID:         tab.session.sessionID,
+		SessionGeneration: tab.gen,
+		Label:             label,
+		Mode:              "normal",
+		Active:            true,
+		Cwd:               tab.ref.Workspace,
+		Remote:            &ref,
+		RemoteState:       tab.state,
 		// Every remote tab's view is built here, so the capability answer cannot
 		// be forgotten on one path. Local tabs never reach this helper and keep
 		// the false zero value.
-		ForkTargetsSupported: remoteForkTargetsSupported(tab),
-		Ready:                tab.state == "ready",
-		Running:              tab.runtime.running || tab.runtime.pendingPrompt || tab.runtime.backgroundJobs > 0,
-		TurnStartedAt:        tab.runtime.turnStartedAt,
-		PendingPrompt:        tab.runtime.pendingPrompt,
-		BackgroundJobs:       tab.runtime.backgroundJobs,
-		CancelRequested:      tab.runtime.cancelRequested,
-		Cancellable:          tab.runtime.cancellable,
-		ReadOnly:             tab.session.takenOver,
-		TakenOver:            tab.session.takenOver,
+		ForkTargetsSupported:           remoteForkTargetsSupported(tab),
+		InteractionTargetSupported:     tab.capabilities[serveCapabilityInteractionTargetV1],
+		ExtensionFormInstanceSupported: tab.capabilities[serveCapabilityExtensionFormInstanceV1],
+		Ready:                          tab.state == "ready",
+		Running:                        tab.runtime.running || tab.runtime.pendingPrompt || tab.runtime.backgroundJobs > 0,
+		TurnStartedAt:                  tab.runtime.turnStartedAt,
+		PendingPrompt:                  tab.runtime.pendingPrompt,
+		BackgroundJobs:                 tab.runtime.backgroundJobs,
+		CancelRequested:                tab.runtime.cancelRequested,
+		Cancellable:                    tab.runtime.cancellable,
+		ReadOnly:                       tab.session.takenOver,
+		TakenOver:                      tab.session.takenOver,
 	}
 }
 
@@ -590,7 +610,11 @@ func remoteTabTopicID(tab *remoteTab) string {
 	if tab == nil {
 		return ""
 	}
-	return tab.ref.HostID + "\x00" + tab.ref.Workspace + "\x00" + tab.session.name
+	identity := tab.session.name
+	if sessionID := strings.TrimSpace(tab.session.sessionID); sessionID != "" {
+		identity = sessionID
+	}
+	return tab.ref.HostID + "\x00" + tab.ref.Workspace + "\x00" + identity
 }
 
 func (a *App) remoteTabMetaSnapshot(tabID string) (TabMeta, bool) {

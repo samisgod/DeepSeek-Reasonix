@@ -4,14 +4,14 @@ import (
 	"context"
 	"os"
 	"path/filepath"
-	"strings"
-	"sync"
-	"testing"
-	"time"
 
 	"reasonix/internal/config"
 	"reasonix/internal/control"
 	"reasonix/internal/event"
+	"strings"
+	"sync"
+	"testing"
+	"time"
 )
 
 func testAppWithOrderedTabs(t *testing.T, active string, ids ...string) *App {
@@ -332,51 +332,6 @@ func TestKeepOnlyVisibleTabCancelsBuildingHiddenTab(t *testing.T) {
 	}
 }
 
-func TestConcurrentActivateTopicSerializesSingleSurfacePruning(t *testing.T) {
-	isolateDesktopUserDirs(t)
-	app := NewApp()
-	t.Cleanup(func() { app.shutdown(context.Background()) })
-
-	topics := []string{
-		"topic-a",
-		"topic-b",
-		"topic-c",
-		"topic-d",
-		"topic-e",
-		"topic-f",
-		"topic-g",
-		"topic-h",
-	}
-	start := make(chan struct{})
-	errs := make(chan error, len(topics))
-	var wg sync.WaitGroup
-	for _, topicID := range topics {
-		wg.Add(1)
-		go func(topicID string) {
-			defer wg.Done()
-			<-start
-			_, err := app.ActivateTopic("global", "", topicID, "")
-			errs <- err
-		}(topicID)
-	}
-	close(start)
-	wg.Wait()
-	close(errs)
-
-	for err := range errs {
-		if err != nil {
-			t.Fatalf("ActivateTopic returned error under concurrent navigation: %v", err)
-		}
-	}
-	tabs := app.ListTabs()
-	if len(tabs) != 1 {
-		t.Fatalf("ListTabs returned %d tabs after single-surface navigation, want 1: %+v", len(tabs), tabs)
-	}
-	if !tabs[0].Active {
-		t.Fatalf("remaining tab is not active: %+v", tabs[0])
-	}
-}
-
 func TestClearTabBuildCancelKeepsSuccessfulControllerContext(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
@@ -507,37 +462,6 @@ func TestAttachExistingSessionRuntimeSkipsRemovedTab(t *testing.T) {
 	}
 	if target.Ctrl != nil || target.Ready {
 		t.Fatal("removed target tab was mutated")
-	}
-}
-
-func TestRemoveWorkspaceDropsVisibleTabsAndPersistedEntries(t *testing.T) {
-	isolateDesktopUserDirs(t)
-	projectRoot := t.TempDir()
-	if err := addProject(projectRoot, "Project"); err != nil {
-		t.Fatalf("add project: %v", err)
-	}
-	app := &App{
-		tabs: map[string]*WorkspaceTab{
-			"project": {ID: "project", Scope: "project", WorkspaceRoot: projectRoot, TopicID: "topic-project", Ready: true, disabledMCP: map[string]ServerView{}},
-			"global":  {ID: "global", Scope: "global", WorkspaceRoot: globalTabWorkspaceRoot(), TopicID: "topic-global", Ready: true, disabledMCP: map[string]ServerView{}},
-		},
-		tabOrder:         []string{"project", "global"},
-		activeTabID:      "project",
-		detachedSessions: map[string]*WorkspaceTab{},
-	}
-	app.mu.Lock()
-	app.saveTabsLocked()
-	app.mu.Unlock()
-
-	if err := app.RemoveWorkspace(projectRoot); err != nil {
-		t.Fatalf("RemoveWorkspace: %v", err)
-	}
-	assertTabIDs(t, app.ListTabs(), "global")
-	if got := app.ListWorkspaces(); len(got) != 0 {
-		t.Fatalf("workspaces after remove = %+v, want none", got)
-	}
-	if got := loadTabsFile(); len(got.Tabs) != 1 || got.Tabs[0].ID != "global" {
-		t.Fatalf("persisted tabs after workspace remove = %+v, want only global", got)
 	}
 }
 

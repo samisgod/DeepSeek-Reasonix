@@ -685,8 +685,10 @@ commands may write only those same roots plus platform-specific command
 temp/cache roots, cannot read configured `forbid_read` roots while the OS
 sandbox is active, and reach the network only when `[sandbox] network` is set.
 Reasonix always removes saved provider and bot credential variables from tool
-subprocess environments and automatically adds its global credential `.env` to
-the runtime read-deny boundary. Project `.env` files keep their existing
+subprocess environments. On macOS and Linux it also automatically adds the
+global credential `.env` to the runtime read-deny boundary. Windows does not:
+it has no OS-level shell sandbox, and denying the current user would also deny
+the host settings process. Project `.env` files keep their existing
 workspace-scoped behavior.
 
 **Session-private temporary directory.** Within one logical chat session, Bash
@@ -717,27 +719,32 @@ $tmpFile = Join-Path $env:TEMP "result.json"
 | --- | --- | --- |
 | Linux + bubblewrap | Virtual `/tmp` (bound to the private dir) | Shared for the session (not a fresh empty tmpfs each call) |
 | macOS Seatbelt | Host path of the private dir (allowed by policy) | Host macOS temporary directory; scripts should use `$TMPDIR` |
-| Windows (no OS Bash sandbox) | Host path of the private dir | Not promised to match (e.g. Git Bash `/tmp`) |
+| Windows (no OS sandbox) | Host path of the private dir | Not promised to match (e.g. Git Bash `/tmp`) |
 
 Independent sandboxes such as MCP servers keep their own isolation and do not
 inherit the chat session's temporary directory. An approved sandbox-escape
 command still receives the private temp environment variables, but on Linux its
 literal `/tmp` is no longer mapped by bubblewrap.
 
-**Windows note:** Reasonix does not ship an OS-level Bash sandbox on Windows.
-The effective mode is fixed to `off`; even an older config containing
-`bash = "enforce"` resolves to `off`, `reasonix doctor` flags the ignored value,
-and the desktop selector is read-only. Bash commands therefore run unconfined,
-while the dedicated file tools still enforce `workspace_root`, `allow_write`,
-and `forbid_read` in process. Saved credential variables are still removed from
-the child environment, but an approved unconfined shell runs as the user and is
-not a security boundary for other user-readable files.
+**Windows note:** Windows has no OS-level shell sandbox. The restricted-token
+backend is retired from enforcement because denying the current user's own SID
+locked hosts out of their credential store and the token broke common
+toolchains. Permission presets still apply as Reasonix tool-layer
+boundaries: Read only refuses file writes and asks before every shell command,
+and Workspace write keeps file tools inside `workspace_root` and `allow_write`
+and asks before writing elsewhere. Shell commands in every preset run as the
+current OS user without confinement, so `[sandbox] network` and shell-level
+`forbid_read` are not enforced there; dedicated file tools still honor
+`forbid_read`. Saved credential variables are removed from child environments,
+but local tools run as the user and can deliberately read other user-readable
+files. `[sandbox] bash = "enforce"` resolves to `off` on Windows and
+`reasonix doctor` reports the ignored value.
 
 When no OS sandbox backend is available, `bash = "enforce"` refuses bash
 execution instead of running unconfined. Install the platform sandbox backend
 (bubblewrap/`bwrap` on Linux, `sandbox-exec` on macOS) or set
 `[sandbox] bash = "off"` to explicitly restore the pre-1.16 unconfined shell
-behavior. On Windows the compatible value is always `off`.
+behavior.
 
 For coding-quality reports, run `reasonix doctor quality <branch-id-or-path>`
 (add `--json` for structured output). This reads the selected session but emits

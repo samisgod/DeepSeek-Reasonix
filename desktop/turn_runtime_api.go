@@ -60,6 +60,9 @@ func (a *App) CancelSessionForTab(tabID string) (control.CancelReceipt, error) {
 	if err != nil {
 		return control.CancelReceipt{}, err
 	}
+	if concrete, ok := ctrl.(*control.Controller); ok {
+		return concrete.CancelSessionFrom("user_stop"), nil
+	}
 	if session, ok := ctrl.(interface{ CancelSession() control.CancelReceipt }); ok {
 		return session.CancelSession(), nil
 	}
@@ -110,6 +113,49 @@ func (a *App) StartTurnForTab(tabID, input, submissionID string) (TurnStartView,
 	// This is an admission receipt, not a potentially raced runtime snapshot.
 	// Ordered events carry every later transition, including a provider that
 	// completed before the Wails Promise was delivered.
+	return TurnStartView{TurnID: turnID, Status: event.TurnQueued, Disposition: control.SubmitTurnStarted, RuntimeEpoch: epoch, SubmissionID: submissionID}, nil
+}
+
+func (a *App) StartTurnForTabWithDrafts(tabID, input, submissionID string, draftIDs []string) (TurnStartView, error) {
+	if strings.TrimSpace(submissionID) == "" {
+		return TurnStartView{}, fmt.Errorf("submissionId is required")
+	}
+	req := control.SubmissionRequest{ID: submissionID, Input: input, Display: input, DraftIDs: append([]string(nil), draftIDs...)}
+	if _, ctrl := a.tabAndCtrlByID(tabID); ctrl != nil {
+		if identified, ok := ctrl.(*control.Controller); ok {
+			receipt, found, err := identified.LookupSubmission(req)
+			if err != nil {
+				return TurnStartView{}, err
+			}
+			if found {
+				return TurnStartView{TurnID: receipt.TurnID, Status: event.TurnQueued, Disposition: control.SubmitTurnStarted, SubmissionID: submissionID}, nil
+			}
+		}
+	}
+	admission, ctrl, err := a.beginTabTurn(tabID, true, submissionID)
+	if err != nil {
+		return TurnStartView{}, a.submissionAdmissionError(tabID, req, err)
+	}
+	defer admission.abort()
+	if err := a.ensureTabTopicIndexedForUserTurn(admission.tab); err != nil {
+		return TurnStartView{}, err
+	}
+	identified, ok := ctrl.(*control.Controller)
+	if !ok {
+		return TurnStartView{}, fmt.Errorf("unsupported: attachments-v1")
+	}
+	if _, err := identified.SubmitIdentified(req); err != nil {
+		return TurnStartView{}, inboxBridgeError(err)
+	}
+	admission.finish(ctrl)
+	turnID := identified.TurnIDForSubmission(submissionID)
+	if strings.TrimSpace(turnID) == "" {
+		return TurnStartView{}, fmt.Errorf("turn admission did not produce a durable turn id")
+	}
+	epoch := ""
+	if admission.tab != nil && admission.tab.sink != nil {
+		epoch = admission.tab.sink.runtimeEpochSnapshot()
+	}
 	return TurnStartView{TurnID: turnID, Status: event.TurnQueued, Disposition: control.SubmitTurnStarted, RuntimeEpoch: epoch, SubmissionID: submissionID}, nil
 }
 

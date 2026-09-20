@@ -252,6 +252,17 @@ func (s *Session) contentStore() *sessioncontent.Store {
 	return store.content
 }
 
+func (s *Session) ContentStore() *sessioncontent.Store { return s.contentStore() }
+
+func (s *Session) StorageGeneration() string {
+	if s == nil {
+		return ""
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.storageGeneration
+}
+
 // CommitPrepared appends an already validated batch under one short memory
 // lock. The persistence binding only receives an immutable batch into its
 // write-behind queue, so this never performs file I/O and never blocks on a
@@ -260,7 +271,7 @@ func (s *Session) CommitPrepared(prepared PreparedBatch) (Commit, error) {
 	return s.commitPrepared(prepared, nil)
 }
 
-func (s *Session) commitPrepared(prepared PreparedBatch, expectedTitle *string) (Commit, error) {
+func (s *Session) commitPrepared(prepared PreparedBatch, expectedTitleSequence *uint64) (Commit, error) {
 	defer prepared.Release()
 	if s == nil {
 		return Commit{}, fmt.Errorf("session: nil session")
@@ -269,7 +280,7 @@ func (s *Session) commitPrepared(prepared PreparedBatch, expectedTitle *string) 
 		return Commit{}, fmt.Errorf("session: operation id and events are required")
 	}
 	s.mu.Lock()
-	if expectedTitle != nil && s.projection.Title != *expectedTitle {
+	if expectedTitleSequence != nil && s.projection.TitleSequence != *expectedTitleSequence {
 		s.mu.Unlock()
 		return Commit{}, ErrSessionTitleChanged
 	}
@@ -630,6 +641,17 @@ func (s *Session) Flush(ctx context.Context) (DurableReceipt, error) {
 		return DurableReceipt{}, ErrReadOnly
 	}
 	return s.binding.Flush(ctx)
+}
+
+// FlushThrough waits only for the captured accepted prefix.
+func (s *Session) FlushThrough(ctx context.Context, through uint64) (DurableReceipt, error) {
+	if s == nil || s.binding == nil {
+		return DurableReceipt{}, ErrReadOnly
+	}
+	if through > s.EventSequence() {
+		return DurableReceipt{}, fmt.Errorf("session: watermark exceeds accepted sequence")
+	}
+	return s.binding.FlushThrough(ctx, through)
 }
 
 // Read exposes the durable prefix through a paged read. Events accepted but not

@@ -40,6 +40,31 @@ func TestCanonicalNavigationLastRequestWins(t *testing.T) {
 	}
 }
 
+func TestTicketedCanonicalNavigationKeepsOriginalIntent(t *testing.T) {
+	app, _, target, _, _ := canonicalWorkspaceOpenFixture(t)
+	if _, err := app.StartTopicActivation(TopicActivationRequest{SessionPath: sessionRoute(target.Ref().SessionID)}); err != nil {
+		t.Fatal(err)
+	}
+	if got := app.desktopSessions.navigationSeq.Load(); got != 1 {
+		t.Fatalf("one navigation claimed %d intents; a nested open can overtake a newer queued request", got)
+	}
+}
+
+func TestDelayedCanonicalNavigationCannotReclaimSupersededIntent(t *testing.T) {
+	app, tab, target, _, _ := canonicalWorkspaceOpenFixture(t)
+	intent := app.desktopSessions.navigationSeq.Add(1)
+	if err := app.SetActiveTab(tab.ID); err != nil {
+		t.Fatal(err)
+	}
+	before := tab.SessionID
+	if _, err := app.openTopicSessionWithNavigation("project", tab.WorkspaceRoot, "", sessionRoute(target.Ref().SessionID), intent); !errors.Is(err, errSessionNavigationSuperseded) {
+		t.Fatalf("late adopted source open = %v", err)
+	}
+	if tab.SessionID != before {
+		t.Fatal("late source adoption displaced the newer selection")
+	}
+}
+
 func TestCanonicalOpenReattachesDetachedWorkspace(t *testing.T) {
 	app, tab, target, root, workspaceID := canonicalWorkspaceOpenFixture(t)
 	ctrl, err := app.buildTabControllerBoot(app.ctx, boot.Options{Model: tab.model, WorkspaceRoot: root, SessionDir: desktopSessionDir(root), Sink: event.Discard})
@@ -71,6 +96,7 @@ func TestCanonicalLegacyResumeUsesTargetWorkspace(t *testing.T) {
 	for _, page := range []bool{false, true} {
 		t.Run(map[bool]string{false: "messages", true: "page"}[page], func(t *testing.T) {
 			app, tab, target, root, _ := canonicalWorkspaceOpenFixture(t)
+			tab.HistoricalSource = &SessionSourceRef{Path: "/fixture/old.jsonl"}
 			var err error
 			if page {
 				_, err = app.ResumeSessionPageForTab(tab.ID, sessionRoute(target.Ref().SessionID), 32)
@@ -82,6 +108,9 @@ func TestCanonicalLegacyResumeUsesTargetWorkspace(t *testing.T) {
 			}
 			if !sameDesktopPath(tab.WorkspaceRoot, root) {
 				t.Fatal("compatibility entry kept source workspace")
+			}
+			if tab.HistoricalSource != nil {
+				t.Fatal("compatibility entry retained the preparation action")
 			}
 		})
 	}

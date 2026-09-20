@@ -31,7 +31,7 @@ func ReasoningForConfig(cfg provider.Config) provider.ReasoningCapability {
 	case protocol == "openai" || (protocol == "" && IsMiMo(cfg.BaseURL)):
 		cap = provider.ReasoningOptions("", "low", "medium", "high")
 	default:
-		cap = provider.ReasoningOptions("")
+		cap = provider.UnknownReasoning()
 	}
 	cap = provider.DeclaredReasoning(cfg, cap)
 	if protocol == "glm" || (protocol == "" && (IsZhipu(cfg.BaseURL) || IsLongCat(cfg.BaseURL))) {

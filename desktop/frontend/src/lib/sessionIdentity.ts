@@ -8,6 +8,11 @@ export type SessionIdentity = Readonly<{
   sessionGeneration?: number;
 }>;
 
+/** Zero is the initial host binding; only absent/invalid generations are unknown. */
+export function hasSessionGeneration(value: unknown): value is number {
+  return typeof value === "number" && Number.isSafeInteger(value) && value >= 0;
+}
+
 export type SessionHydrationOptions<Item, SurfacePolicy extends string> = SessionIdentity & Readonly<{
   skipHistory?: boolean;
   placeholderItems?: Item[];
@@ -29,11 +34,16 @@ export function sessionIdentityFields(identity: SessionIdentity | undefined): Se
   };
 }
 
-function identityBaseKey(identity: SessionIdentity | undefined): string {
+export function sessionIdentityBaseKey(identity: SessionIdentity | undefined): string {
   const ref = identity?.session;
-  if (ref?.sessionId) return `s\0${ref.hostId || "local"}\0${ref.sessionId}`;
+  if (ref?.sessionId) return `ref\0${ref.hostId || "local"}\0${ref.sessionId}`;
   const path = identity?.sessionPath?.trim() || "";
-  return path ? `p\0${path}` : "";
+  return path ? `path\0${path}` : "";
+}
+
+/** Navigation adapters expose the canonical route even when tabs omit paths. */
+export function sessionIdentityRoute(identity: SessionIdentity | undefined): string | undefined {
+  return identity?.session?.sessionId ? `session-id:${identity.session.sessionId}` : identity?.sessionPath;
 }
 
 function sameGeneration(target: SessionIdentity, current: SessionIdentity | undefined): boolean {
@@ -48,13 +58,13 @@ export function sameSessionIdentity(
   current: SessionIdentity | undefined,
 ): boolean {
   if (!target || !current) return false;
-  const key = identityBaseKey(target);
-  return !!(key && key === identityBaseKey(current) && sameGeneration(target, current));
+  const key = sessionIdentityBaseKey(target);
+  return !!(key && key === sessionIdentityBaseKey(current) && sameGeneration(target, current));
 }
 
 /** Stable cache/fence key. An empty string means the identity is not yet proven. */
 export function sessionIdentityStableKey(identity: SessionIdentity | undefined): string {
-  const key = identityBaseKey(identity);
+  const key = sessionIdentityBaseKey(identity);
   return key ? `${key}\0${identity?.sessionGeneration ?? 0}` : "";
 }
 
@@ -63,7 +73,7 @@ export function hydrateIdentityCurrent(
   load: SessionIdentity,
   current: SessionIdentity | undefined,
 ): boolean {
-  if (!identityBaseKey(load)) {
+  if (!sessionIdentityBaseKey(load)) {
     return sameGeneration(load, current);
   }
   return sameSessionIdentity(load, current);

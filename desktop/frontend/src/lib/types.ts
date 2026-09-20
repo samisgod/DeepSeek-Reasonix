@@ -1,5 +1,8 @@
+import type { HistoryToolCall } from "./historyToolTypes";
+export type { HistoryToolCall } from "./historyToolTypes";
 export type { ProjectNode } from "./projectNodeTypes";
 import type { TranscriptTurnMetadata } from "./transcriptProtocol";
+import type { ConnectionAuthentication } from "./authenticationTypes";
 import type { HistorySwitchPhases } from "./sessionDiagnostics";
 import type { ProviderCatalog } from "./providerCatalogTypes";
 export type { SettingsView } from "./settingsViewTypes";
@@ -7,8 +10,7 @@ export type { ProviderProtocolEndpoint, ProviderCatalog, ProviderPresetView } fr
 import type { WireReadStatus } from "./readStatus";
 export type { WireReadStatus } from "./readStatus";
 import type { RecoveryEventFields } from "./recoveryStatus";
-// Wire contract — mirrors desktop/wire.go (itself mirroring internal/serve/wire.go).
-// One event channel carries every kind; `kind` discriminates the payload.
+// Wire contract: one discriminated event channel mirrors desktop/wire.go and internal/serve/wire.go.
 import type { HistoryServerSearch } from "./searchSources";
 import type { Todo } from "./tools";
 import type { ContextBudgetInfo, ContextMaintenanceInfo, WireContextMaintenance } from "./contextMaintenanceTypes";
@@ -383,6 +385,7 @@ export interface WireExtensionSurface {
   surfaceId: string;
   sessionId?: string;
   generation?: number;
+  formInstanceId?: string;
   kind: string; // "status" | "card" | "form" | "notification"
   status?: WireExtensionStatus;
   card?: WireExtensionCard;
@@ -559,6 +562,7 @@ export interface WireFinalReadiness {
 
 // Tab management types (desktop/tabs.go).
 export interface TabMeta extends RemoteTabMetaFields {
+  historicalSource?: import("../generated/desktopContract.generated").SessionSourceRef;
   id: string;
   tabType?: "session" | "file";
   scope: string;
@@ -612,6 +616,8 @@ export interface TabMeta extends RemoteTabMetaFields {
   versionState?: "active" | "pending" | "resolved" | "trashed" | string;
   parentVersionId?: string;
   startupErr?: string;
+  authentication?: ConnectionAuthentication;
+  modelSettingsPending?: boolean;
   active: boolean;
   cwd: string;
 }
@@ -851,26 +857,7 @@ export interface HistoryMessage extends TranscriptTurnMetadata {
   protocolRecovery?: { id: string };
   diagnostic?: { kind: string; status?: number; traceId?: string; providerId?: string; providerDisplayName?: string; protocol?: string; requestPath?: string };
   serverSearch?: HistoryServerSearch[];
-}
-
-export interface HistoryToolCall {
-	partial?: boolean;
-	pending?: boolean;
-	parentId?: string;
-	argChars?: number;
-	startedAt?: number;
-  id: string;
-  name: string;
-  arguments: string;
-  resolvedName?: string;
-  capabilityId?: string;
-  resolvedReadOnly?: boolean;
-  subject?: string;
-  summary?: string;
-  diff?: string;
-  added?: number;
-  removed?: number;
-  argumentsArchived?: boolean;
+  attachments?: Array<{ kind?: string; digest?: string; name?: string; mime?: string; width?: number; height?: number; bytes?: number }>;
 }
 
 export interface HistoryPage {
@@ -889,6 +876,7 @@ export interface HistoryPage {
 // ── Two-phase topic activation (desktop/topic_activation.go) ────────────────
 
 export interface TopicActivationRequest {
+  selector?: import("../generated/desktopContract.generated").SessionSelector;
   scope: string;
   workspaceRoot: string;
   topicId: string;
@@ -1004,12 +992,14 @@ export interface Meta extends RemoteSessionMetaFields {
   ready: boolean;
   runtime?: SessionRuntimeView;
   startupErr?: string;
+  historicalSource?: import("../generated/desktopContract.generated").SessionSourceRef;
   eventChannel: string;
   sessionPath?: string;
   sessionId?: string; session?: SessionRef | null;
   sessionRevision?: number;
   sessionDigest?: string;
   sessionGeneration?: number;
+  runtimeStateSnapshot?: import("./runtimeStateStore").RuntimeState;
   cwd: string;
   workspaceRoot?: string;
   workspaceName?: string;
@@ -1176,6 +1166,7 @@ export interface CommandInfo {
   group?: "actions" | "management" | "subagents" | "skills" | "integrations";
   plugin?: string;
   color?: string;
+  draftBehavior?: "submit" | "setting" | "direct" | "unavailable";
 }
 
 export interface DirEntry {
@@ -1727,6 +1718,14 @@ export interface CapabilityDiagnosticsReport {
   issues: CapabilityIssue[];
 }
 
+export interface CredentialDiagnosticReport {
+  home: string;
+  credentialPath: string;
+  pendingTransactions: number;
+  checks: Array<{ id: string; status: "passed" | "failed" | "unknown" | "not_checked" | string; path?: string; message?: string }>;
+  actions: string[];
+}
+
 export interface CapabilityAssetReport {
   roots: Array<{ path: string; scope?: string; status: string }>;
   entries: Array<{
@@ -1806,16 +1805,8 @@ export interface ProviderModelCatalogUpdate {
   modelCapabilities?: ProviderModelCapabilityUpdate[];
 }
 
-export interface ProviderModelCapabilityView {
-	automaticState?: string;
-	automaticSource?: string;
-	imageInputEnableAllowed?: boolean;
-	imageInputBlockReason?: string;
-  model: string;
-  inputModalities: string[];
-  state: "supported" | "unsupported" | "unknown" | string;
-  source: string;
-}
+import type { ProviderModelCapabilityView } from "./providerModelCapability";
+export type { ProviderModelCapabilityView } from "./providerModelCapability";
 
 export interface ProviderModelCapabilityUpdate {
   model: string;

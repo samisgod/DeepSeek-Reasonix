@@ -1,4 +1,5 @@
 import { modeHasAutoApproveTools, normalizeMode, normalizeToolApprovalMode, type Meta, type TabMeta } from "./types";
+import { sameSessionIdentity } from "./sessionIdentity";
 
 export function metaFromTab(tab: TabMeta, existing?: Meta): Meta {
   const cwd = tab.cwd || tab.workspaceRoot || existing?.cwd || "";
@@ -14,6 +15,7 @@ export function metaFromTab(tab: TabMeta, existing?: Meta): Meta {
     ready: tab.ready,
     runtime: tab.runtime,
     startupErr: tab.startupErr,
+    historicalSource: tab.historicalSource,
     eventChannel: existing?.eventChannel ?? "agent:event",
     cwd,
     workspaceRoot: tab.workspaceRoot || existing?.workspaceRoot || cwd,
@@ -38,6 +40,6 @@ export function metaFromTab(tab: TabMeta, existing?: Meta): Meta {
     goal: tab.goal ?? existing?.goal,
     goalStatus: tab.goalStatus ?? existing?.goalStatus,
     goalView: tab.goalView ?? existing?.goalView,
-    canonicalTodos: existing?.canonicalTodos,
+    canonicalTodos: sameSessionIdentity(tab, existing) ? existing?.canonicalTodos : undefined,
   };
 }

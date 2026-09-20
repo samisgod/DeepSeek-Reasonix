@@ -388,14 +388,13 @@ func keyForWrite(raw []byte, password string) ([]byte, error) {
 	return key, nil
 }
 
-// readCredentialText returns the plaintext credential content of path, decoding
-// an encrypted store transparently. It is the single read funnel for both the
-// dotenv and the line-oriented credential writers.
-func readCredentialText(path string) ([]byte, error) {
-	raw, err := fileencoding.ReadFileUTF8(path)
-	if err != nil {
-		return nil, err
-	}
+// decryptCredentialData returns the plaintext credential content for raw bytes
+// already read from path, opening a master-password protected store
+// transparently. Plain files pass through untouched. It is the single decode
+// funnel behind readCredentialFile, so every credential reader (the dotenv
+// loader, the line-oriented credential writers and the store revision)
+// observes plaintext without each having to know about the vault.
+func decryptCredentialData(path string, raw []byte) ([]byte, error) {
 	if !IsVaultData(raw) {
 		return raw, nil
 	}
@@ -411,6 +410,16 @@ func readCredentialText(path string) ([]byte, error) {
 		return nil, err
 	}
 	return plain, nil
+}
+
+// readCredentialText returns the plaintext credential content of path, decoding
+// an encrypted store transparently.
+func readCredentialText(path string) ([]byte, error) {
+	raw, err := readCredentialFile(path)
+	if err != nil {
+		return nil, err
+	}
+	return fileencoding.DecodeToUTF8(raw), nil
 }
 
 // writeCredentialsBytes writes credential content to path, encrypting it when

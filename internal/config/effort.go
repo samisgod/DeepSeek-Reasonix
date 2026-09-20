@@ -39,11 +39,17 @@ var modelReasoningCapabilities = map[string]modelReasoningCapability{
 // provider entry. Provider implementations still decide how a stored effort is
 // serialized into requests.
 func ReasoningCapabilityForEntry(e *ProviderEntry) provider.ReasoningCapability {
+	e = ResolveReasoningEntry(e)
 	if e == nil {
 		return provider.ReasoningOptions("")
 	}
 	// Resolver-backed entries carry the remote adapter declaration, not a local kind.
 	if e.Kind == "" {
+		if e.ReasoningMetadataUnknown && len(e.SupportedEfforts) == 0 {
+			cap := provider.UnknownReasoning()
+			cap.Default = e.DefaultEffort
+			return cap
+		}
 		return provider.ReasoningOptions(e.DefaultEffort, e.SupportedEfforts...)
 	}
 	cfg := provider.Config{Name: e.Name, BaseURL: e.BaseURL, Model: e.Model, Extra: map[string]any{
@@ -102,6 +108,7 @@ func EffortDisplay(e *ProviderEntry) string {
 // DefaultEffort (or the first supported level) the runtime default. Empty means
 // provider default / omit the provider-specific effort field.
 func EffectiveEffort(e *ProviderEntry) string {
+	e = ResolveReasoningEntry(e)
 	if e == nil {
 		return ""
 	}
@@ -135,6 +142,7 @@ func normalizeProviderEffortFields(e *ProviderEntry) {
 	if e == nil {
 		return
 	}
+	stripRuntimeReasoningDefaults(e)
 	e.Headers = normalizedProviderHeaders(e.Headers)
 	e.Effort = normalizeStoredEffort(e.Effort)
 	e.ReasoningProtocol = normalizeReasoningProtocol(e.ReasoningProtocol)
@@ -155,6 +163,10 @@ func normalizeStoredEffort(raw string) string {
 // controls. Explicit config wins, then the model capability registry, then legacy
 // endpoint heuristics.
 func ReasoningProtocolForEntry(e *ProviderEntry) string {
+	return reasoningProtocolForResolvedEntry(ResolveReasoningEntry(e))
+}
+
+func reasoningProtocolForResolvedEntry(e *ProviderEntry) string {
 	if explicit := explicitReasoningProtocol(e); explicit != "" {
 		return explicit
 	}
@@ -334,6 +346,7 @@ func normalizedModelOverrides(overrides map[string]ProviderModelOverride) map[st
 	}
 	out := make(map[string]ProviderModelOverride, len(overrides))
 	for rawModel, ov := range overrides {
+		ov = explicitModelReasoning(ov)
 		model := strings.TrimSpace(rawModel)
 		if model == "" {
 			continue

@@ -77,10 +77,36 @@ type Projection struct {
 	snapshots     map[string]frozenSnapshot
 	snapshotOrder []string
 	snapshotBytes int
+	recordSerial  uint64
 	// outline is the complete turn index of a frozen cut. It is built by
 	// freezeLocked and read only from frozen cuts, so it always describes the
 	// same revision as the records paged beside it.
 	outline []OutlineEntry
+}
+
+// ensureRecordIdentity owns the last-resort identity for display-only rows.
+// Canonical messages retain their existing m:/tool: identities; transient
+// frames without a business sequence receive an identity scoped to this
+// projection incarnation and keep it for every later snapshot.
+func (p *Projection) ensureRecordIdentity(message *Message) {
+	if message.RecordID != "" {
+		return
+	}
+	switch {
+	case message.Role == "tool" && message.ToolCallID != "":
+		message.RecordID = "tool:" + message.ToolCallID
+	case message.MessageID != "":
+		message.RecordID = "m:" + message.MessageID
+	default:
+		p.recordSerial++
+		message.RecordID = fmt.Sprintf("view:%s:%d", p.incarnation, p.recordSerial)
+	}
+}
+
+func (p *Projection) ensureBufferRecordIdentities() {
+	for _, row := range p.buffer.messages {
+		p.ensureRecordIdentity(&row.message)
+	}
 }
 
 func NewProjection(identity Identity, baseline []Message, covered uint64) (*Projection, error) {
@@ -90,15 +116,15 @@ func NewProjection(identity Identity, baseline []Message, covered uint64) (*Proj
 	// reuse their conversion buffers immediately after construction.
 	encoded, err := json.Marshal(baseline)
 	if err != nil {
-		return nil, err
+		return nil, newBaselineError(err, "baseline_encode_failed", len(baseline), -1, -1, Message{})
 	}
 	var owned []Message
 	if err = json.Unmarshal(encoded, &owned); err != nil {
-		return nil, err
+		return nil, newBaselineError(err, "baseline_decode_failed", len(baseline), -1, -1, Message{})
 	}
 	p.buffer.byMessageID = make(map[string]*bufferedMessage)
-	seen := make(map[string]bool)
-	for _, m := range owned {
+	seen := make(map[string]int)
+	for index, m := range owned {
 		if m.Role == "user" {
 			p.buffer.userTurns++
 			if m.HistoryTurn == 0 {
@@ -112,13 +138,13 @@ func NewProjection(identity Identity, baseline []Message, covered uint64) (*Proj
 			case m.MessageID != "":
 				m.RecordID = "m:" + m.MessageID
 			default:
-				return nil, errors.New("transcript baseline has a record without identity")
+				return nil, newBaselineError(errors.New("transcript baseline has a record without identity"), "missing_record_identity", len(owned), index, -1, m)
 			}
 		}
-		if seen[m.RecordID] {
-			return nil, fmt.Errorf("duplicate transcript record %q", m.RecordID)
+		if previous, exists := seen[m.RecordID]; exists {
+			return nil, newBaselineError(fmt.Errorf("duplicate transcript record %q", m.RecordID), "duplicate_record_identity", len(owned), index, previous, m)
 		}
-		seen[m.RecordID] = true
+		seen[m.RecordID] = index
 		row := &bufferedMessage{message: m}
 		if m.Role == "assistant" {
 			row.content.replace(m.Content)
@@ -179,6 +205,7 @@ func (p *Projection) applyLocked(envelope turnevent.Envelope, covered uint64) er
 	}
 	if e, ok := EventFromEnvelope(owned); ok {
 		p.buffer.Apply(e)
+		p.ensureBufferRecordIdentities()
 		if e.Kind == event.TurnDone {
 			p.applyTerminalNotices(e)
 		}

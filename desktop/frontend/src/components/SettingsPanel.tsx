@@ -17,7 +17,7 @@ import { Eye, EyeOff, Files } from "lucide-react";
 import { lazy, memo, Suspense, startTransition, useCallback, useDeferredValue, useEffect, useId, useMemo, useRef, useState, type KeyboardEvent as ReactKeyboardEvent, type ReactNode } from "react";
 import { ArrowRight, Check, CheckCircle2, ChevronDown, ChevronUp, CircleDollarSign, Clipboard, ExternalLink, KeyRound, Languages, ListChecks, Loader2, Monitor, MoreHorizontal, PanelBottom, Play, Power, QrCode, RefreshCw, Send, SlidersHorizontal, Trash2, Volume2 } from "lucide-react";
 import { asArray } from "../lib/array";
-import { ShellInterpreterFields } from "./SettingsShellSupport";
+import { ShellEnvironmentDetails, ShellInterpreterFields } from "./SettingsShellSupport";
 import { CHANNEL_ICONS } from "./channelIcons";
 import { botAccessEntryCount, botAccessReady, botConnectionCredentialSummary, botConnectionLabel, botConnectionScopeLabel, botConnectionSecretEnv, botConnectionSecretPatch, botInstallTargetForConnection, botInstallTargetMatchesConnection, botTargetHint, botTargetLabel, diagnosticMessage, diagnosticReportDetail, firstConnectionRemote, formatInstallTimeLeft, formatInstallUserCode, qqBotAdded, type BotInstallTarget, type BotOfficialInstallTarget } from "./botConnectionSettings";
 import { app, COMPACT_RATIO_MAX_PERCENT, COMPACT_RATIO_MIN_PERCENT, onRuntimeRebuilt, openExternal } from "../lib/bridge";
@@ -96,7 +96,7 @@ import { StatusBarItemsEditor } from "./StatusBarItemsEditor";
 import { DesktopCloseBehaviorHint } from "./DesktopCloseBehaviorHint";
 export type SettingsInitialFocus =
   | { target: "bot-allowlist"; connectionId?: string; requestId?: number }
-  | { target: "model-access"; requestId?: number; onboarding?: boolean }
+  | { target: "model-access"; requestId?: number; onboarding?: boolean; providerName?: string; sourceTabId?: string }
   | { target: "model-stats"; requestId: number };
 type DesktopPlatform = "darwin" | "windows" | "linux";
 
@@ -425,7 +425,7 @@ export function SettingsPanel({
             ) : (
               <>
                 {tab === "general" && s && <SettingsPageShell key={tab} s={s} tab={tab} busy={busy} apply={apply}><GeneralSection s={s} busy={busy} apply={apply} agentRunning={agentRunning} /></SettingsPageShell>}
-                {(tab === "models" || tab === "providers" || tab === "model-stats") && s && <SettingsPageShell key="model-pages" s={s} tab={tab} busy={busy} apply={apply}><ModelsSection onOpenProviders={() => selectTab("providers")} s={s} busy={busy} apply={apply} backgroundApply={backgroundApply} onboarding={initialFocus?.target === "model-access" && initialFocus.onboarding} onOnboardingComplete={onClose} subtab={tab === "providers" ? "access" : tab === "model-stats" ? "stats" : "usage"} /></SettingsPageShell>}
+                {(tab === "models" || tab === "providers" || tab === "model-stats") && s && <SettingsPageShell key="model-pages" s={s} tab={tab} busy={busy} apply={apply}><ModelsSection onOpenProviders={() => selectTab("providers")} s={s} busy={busy} apply={apply} backgroundApply={backgroundApply} onboarding={initialFocus?.target === "model-access" && initialFocus.onboarding} focusProvider={initialFocus?.target === "model-access" ? initialFocus.providerName : undefined} focusRequestId={initialFocus?.target === "model-access" ? initialFocus.requestId : undefined} onOnboardingComplete={onClose} subtab={tab === "providers" ? "access" : tab === "model-stats" ? "stats" : "usage"} /></SettingsPageShell>}
                 {tab === "bots" && s && <SettingsPageShell key={tab} s={s} tab={tab} busy={busy} apply={apply}><BotsSection s={s} busy={busy} apply={apply} initialFocus={initialFocus} /></SettingsPageShell>}
                 {tab === "mcp" && <SettingsPageShell key={tab} s={s} tab={tab} busy={false} apply={apply}><Suspense fallback={lazySettingsPageFallback}><MCPServersSettingsPage /></Suspense></SettingsPageShell>}
                 {tab === "remote" && <SettingsPageShell key={tab} s={s} tab={tab} busy={false} apply={apply}><Suspense fallback={lazySettingsPageFallback}><RemoteHostsPage /></Suspense></SettingsPageShell>}
@@ -581,6 +581,8 @@ type SectionProps = {
 type ModelsSectionProps = SectionProps & {
   onOpenProviders?: () => void;
   onboarding?: boolean;
+  focusProvider?: string;
+  focusRequestId?: number;
   onOnboardingComplete?: () => void;
   backgroundApply: (fn: () => Promise<void>) => Promise<void>;
   subtab: "usage" | "access" | "stats";
@@ -4107,7 +4109,7 @@ function botDraftWithDerivedGatewayState(draft: BotSettingsView): BotSettingsVie
   };
 }
 
-export function ModelsSection({ s, busy, apply, backgroundApply, subtab, onboarding, onOnboardingComplete, onOpenProviders }: ModelsSectionProps) {
+export function ModelsSection({ s, busy, apply, backgroundApply, subtab, onboarding, focusProvider, focusRequestId, onOnboardingComplete, onOpenProviders }: ModelsSectionProps) {
   const t = useT();
   const autoRefreshKeyRef = useRef("");
   const autoRefreshGenerationRef = useRef(0);
@@ -4652,7 +4654,7 @@ export function ModelsSection({ s, busy, apply, backgroundApply, subtab, onboard
         </div>
       ) : null}
       <div className="model-access-page" hidden={subtab !== "access"}>
-        <ProvidersSection s={s} busy={busy} apply={apply} onboarding={onboarding} onOnboardingComplete={onOnboardingComplete} />
+        <ProvidersSection s={s} busy={busy} apply={apply} onboarding={onboarding} focusProvider={focusProvider} focusRequestId={focusRequestId} onOnboardingComplete={onOnboardingComplete} />
       </div>
       {subtab === "stats" && (
         <Suspense fallback={<div className="empty">{t("settings.loading")}</div>}>
@@ -4842,12 +4844,22 @@ function proxyModeLabel(mode: ProxyMode, t: ReturnType<typeof useT>): string {
   }
 }
 
-export function ProvidersSection({ s, busy, apply, onboarding, onOnboardingComplete }: SectionProps & { onboarding?: boolean; onOnboardingComplete?: () => void }) {
+export function ProvidersSection({ s, busy, apply, onboarding, focusProvider, focusRequestId, onOnboardingComplete }: SectionProps & { onboarding?: boolean; focusProvider?: string; focusRequestId?: number; onOnboardingComplete?: () => void }) {
   const t = useT();
   const existingConnection = s.providers.find(p => p.added);
   const [editing, setEditing] = useState<string | null>(() => onboarding ? existingConnection?.name ?? null : null);
   const [adding, setAdding] = useState<AddProviderMode>(() => onboarding && !existingConnection ? "official" : null);
   const [revealedProvider, setRevealedProvider] = useState<string | null>(() => onboarding ? existingConnection?.name ?? null : null);
+  useEffect(() => {
+    if (!focusProvider) return;
+    if (s.providers.some((provider) => provider.name === focusProvider)) {
+      setRevealedProvider(focusProvider);
+      setEditing(focusProvider);
+    } else {
+      setRevealedProvider(null);
+      setEditing(null);
+    }
+  }, [focusProvider, focusRequestId, s.providers]);
   const readyConnection = s.providers.find(p => p.added && providerIsConfigured(p) && p.models.length > 0);
   const startUsing = async () => {
     if (!readyConnection) return;
@@ -6585,8 +6597,8 @@ export function ProviderEditor({
       {fetchFallback && <div role="alert" className="provider-fetch-status provider-fetch-status--warn">{fetchFallback}</div>}
       {modelDialog !== null && <Suspense fallback={null}><ProviderModelDialog
         baseURL={effectiveRequestUrl} candidates={modelCandidateNames} contextDefault={Number(ctx) || undefined}
-        effortOptions={(modelDialog && modelOverrides.find(item=>item.model === modelDialog)?.supportedEfforts?.length ? (modelOverrides.find(item=>item.model === modelDialog)?.supportedEfforts ?? []) : (supportedEfforts ?? [])).filter(Boolean)}
-        initial={modelDialog ? (() => { const override = modelOverrides.find(item=>item.model === modelDialog); return {model:modelDialog, contextWindow:modelContextWindows[modelDialog] ?? "", maxOutputTokens:override?.maxOutputTokens ?? 0, vision:override?.vision ?? null, supportedEfforts:override?.supportedEfforts ?? supportedEfforts, defaultEffort:override?.defaultEffort ?? ""}; })() : undefined}
+        effortOptions={Array.from(new Set([...(modelCapabilities.find(item=>item.model === modelDialog)?.reasoning?.options ?? []).map(option=>option.id), ...(modelOverrides.find(item=>item.model === modelDialog)?.supportedEfforts ?? supportedEfforts ?? [])])).filter(Boolean)}
+        initial={modelDialog ? (() => { const override = modelOverrides.find(item=>item.model === modelDialog); return {model:modelDialog, contextWindow:modelContextWindows[modelDialog] ?? "", maxOutputTokens:override?.maxOutputTokens ?? 0, vision:override?.vision ?? null, supportedEfforts:override?.supportedEfforts ?? [], defaultEffort:override?.defaultEffort ?? ""}; })() : undefined}
         capability={modelCapabilities.find(item=>item.model === modelDialog)} busy={busy || fetchingModels}
         onClose={()=>setModelDialog(null)} onApply={applyModelDetails} onDelete={deleteModel}/></Suspense>}
       <ProviderEditorModelPicker
@@ -7029,20 +7041,12 @@ function SandboxSection({ s, busy, apply, windows }: SectionProps & { windows: b
   return (
     <SettingsSection
       title={t("settings.sandboxTitle")}
-      description={t("settings.sandboxBoundaryHint")}
-      actions={
-        <Tooltip label={t("settings.reloadSessionConfigHint")}>
-          <button className="btn btn--small" disabled={busy} title={t("settings.reloadSessionConfigHint")} onClick={() => void reloadSession()}>
-            <RefreshCw size={14} aria-hidden="true" />
-            <span>{t("settings.reloadSessionConfig")}</span>
-          </button>
-        </Tooltip>
-      }
+      description={t(windows ? "settings.sandboxBoundaryHintWindows" : "settings.sandboxBoundaryHint")}
     >
       <ShellInterpreterFields sb={sb} windows={windows} busy={busy} setShell={(prefer) => void apply(() => app.SetShellPreference(prefer))} reloadSession={() => void reloadSession()} />
-      <SettingsField label={t("settings.allowNetwork")}>
+      <SettingsField label={t("settings.allowNetwork")} hint={windows ? t("settings.allowNetworkWindowsHint") : undefined}>
         <label className="set-check set-check--inline">
-          <input type="checkbox" checked={sb.network} disabled={busy} onChange={(e) => void set({ network: e.target.checked })} />
+          <input type="checkbox" checked={sb.network} disabled={busy || windows} onChange={(e) => void set({ network: e.target.checked })} />
           {t("settings.allowNetwork")}
         </label>
       </SettingsField>
@@ -7056,24 +7060,19 @@ function SandboxSection({ s, busy, apply, windows }: SectionProps & { windows: b
           onBlur={() => root !== sb.workspaceRoot && void set({ workspaceRoot: root })}
         />
       </SettingsField>
-      <SettingsField label={t("settings.effectiveWriteRoots")} hint={t("settings.effectiveWriteRootsHint")} stacked>
-        <div className="set-rules set-rules--readonly">
-          <div className="set-rules__chips">
-            {effectiveWriteRoots.length === 0 && <span className="mem-empty">{t("settings.noEffectiveWriteRoots")}</span>}
-            {effectiveWriteRoots.map((path, index) => (
-              <span className="set-rule set-rule--path" key={`${path}-${index}`}>
-                {path}
-              </span>
-            ))}
-          </div>
-        </div>
-      </SettingsField>
       <RuleList
         list="allow_write"
         rules={sb.allowWrite}
         busy={busy}
         onAdd={async (d) => { await set({ allowWrite: [...sb.allowWrite, d] }); }}
         onRemove={async (d) => { await set({ allowWrite: sb.allowWrite.filter((x) => x !== d) }); }}
+      />
+      <ShellEnvironmentDetails
+        sb={sb}
+        windows={windows}
+        busy={busy}
+        effectiveWriteRoots={effectiveWriteRoots}
+        reloadSession={() => void reloadSession()}
       />
     </SettingsSection>
   );

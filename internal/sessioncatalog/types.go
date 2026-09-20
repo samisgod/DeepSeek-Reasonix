@@ -14,7 +14,7 @@ import (
 )
 
 const (
-	SchemaVersion       = 12
+	SchemaVersion       = 13
 	repairEngineVersion = 1
 	DefaultLimit        = 50
 	MaxLimit            = 200
@@ -220,6 +220,13 @@ type TopicPageRequest struct {
 	Query         string `json:"query,omitempty"`
 	TimeFilter    string `json:"timeFilter,omitempty"`
 	SortMode      string `json:"sortMode,omitempty"`
+	// IncludeTopicIDsJSON and ExcludeTopicIDsJSON carry a JSON string array into
+	// SQLite's json_each table function. They keep large sidebar groups bounded
+	// to one SQL parameter instead of expanding one placeholder per topic.
+	IncludeTopicIDsJSON string `json:"-"`
+	ExcludeTopicIDsJSON string `json:"-"`
+	ExcludePinned       bool   `json:"-"`
+	CursorBinding       string `json:"-"`
 	// ManualOrder makes sort_order the primary key within each pinned bucket.
 	// It is intentionally request-scoped: users who have never reordered keep
 	// the activity/created ordering even though metadata rows have a sort value.
@@ -250,7 +257,7 @@ type SessionPage struct {
 }
 
 // DefaultPath is the disposable cache file under CacheDir ("" when unavailable).
-// v8.sqlite isolates the v12 head projection from v11 writers.
+// v9.sqlite isolates path-identity-v2 keys from older writers.
 // Session JSONL/WAL/sidecars remain authoritative and older binaries may keep
 // using their own disposable cache without cross-writing this one.
 func DefaultPath() string {
@@ -258,5 +265,5 @@ func DefaultPath() string {
 	if cache == "" {
 		return ""
 	}
-	return filepath.Join(cache, "session-catalog", "v8.sqlite")
+	return filepath.Join(cache, "session-catalog", "v9.sqlite")
 }

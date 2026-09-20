@@ -60,8 +60,13 @@ func (a *App) localRuntimeBindingsLocked() map[localRuntimeBindingKey]localRunti
 		bindings[localRuntimeBindingKey{key, open}] = localRuntimeBinding{tab: tab, ctrl: tab.Ctrl,
 			view: RuntimeSessionState{TabID: tab.ID, Scope: tab.Scope, WorkspaceRoot: tab.WorkspaceRoot,
 				TopicID: tab.TopicID, SessionID: tab.SessionID, SessionPath: tab.SessionPath, SessionGeneration: tab.SessionGeneration, Open: open, Freshness: "synced"},
-			catalog: catalogRuntimeSnapshot{scope: tab.Scope, workspaceRoot: tab.WorkspaceRoot, topicID: tab.TopicID, sessionPath: tab.SessionPath,
+			catalog: catalogRuntimeSnapshot{tabID: tab.ID, scope: tab.Scope, workspaceRoot: tab.WorkspaceRoot, topicID: tab.TopicID, sessionPath: tab.SessionPath,
 				activity: tab.ActivityStatus, topicTitle: tab.TopicTitle, topicTitleSource: tab.topicTitleSource, open: open}}
+		if tab.SessionID != "" {
+			binding := bindings[localRuntimeBindingKey{key, open}]
+			binding.catalog.sessionPath = sessionRoute(tab.SessionID)
+			bindings[localRuntimeBindingKey{key, open}] = binding
+		}
 	}
 	for key, tab := range a.tabs {
 		collect(key, tab, true)
@@ -272,7 +277,10 @@ func (a *App) sampleRemoteRuntimeSessions() []RuntimeSessionState {
 				continue
 			}
 			freshness := "synced"
-			if tab.state != "ready" || tab.session.takenOver || tab.runtime.syncFailed || tab.runtimeUnknown[path] != 0 {
+			// A foreground takeover says nothing about another session, but a
+			// tab without a live stream or with a failed sync only holds the
+			// snapshot frozen at its last observation.
+			if tab.state != "ready" || tab.runtime.syncFailed || tab.runtimeUnknown[path] != 0 {
 				freshness = "unknown"
 			}
 			sessions = append(sessions, RuntimeSessionState{TabID: tab.id, Scope: "remote", HostID: tab.ref.HostID, WorkspaceRoot: tab.ref.Workspace,

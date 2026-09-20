@@ -1703,7 +1703,6 @@ func normalizeOfficialDeepSeekModels(c *Config) {
 		}
 		backfillOfficialDeepSeekResponsesModels(p)
 		backfillDeepSeekAnthropicCapabilities(p)
-		backfillOfficialDeepSeekResponsesCapabilities(p)
 	}
 }
 
@@ -1715,7 +1714,6 @@ func backfillDeepSeekAnthropicCapabilities(p *ProviderEntry) {
 	if strings.TrimSpace(p.Thinking) == "" {
 		p.Thinking = "enabled"
 	}
-	backfillOfficialDeepSeekEffortOverrides(p)
 }
 
 func officialProviderHost(baseURL string) string {
@@ -2065,18 +2063,17 @@ func ensureDeepSeekOfficialProvider(c *Config) {
 		return
 	}
 	entry := ProviderEntry{
-		Name:           "deepseek",
-		Kind:           "anthropic",
-		BaseURL:        deepSeekAnthropicBaseURL,
-		Models:         []string{"deepseek-v4-flash", "deepseek-v4-pro"},
-		Default:        "deepseek-v4-flash",
-		APIKeyEnv:      "DEEPSEEK_API_KEY",
-		BalanceURL:     "https://api.deepseek.com/user/balance",
-		Thinking:       "enabled",
-		WebSearch:      boolPointer(true),
-		ContextWindow:  1_000_000,
-		Prices:         deepSeekV4PricesForConfig(c),
-		ModelOverrides: deepSeekV4EffortOverrides(),
+		Name:          "deepseek",
+		Kind:          "anthropic",
+		BaseURL:       deepSeekAnthropicBaseURL,
+		Models:        []string{"deepseek-v4-flash", "deepseek-v4-pro"},
+		Default:       "deepseek-v4-flash",
+		APIKeyEnv:     "DEEPSEEK_API_KEY",
+		BalanceURL:    "https://api.deepseek.com/user/balance",
+		Thinking:      "enabled",
+		WebSearch:     boolPointer(true),
+		ContextWindow: 1_000_000,
+		Prices:        deepSeekV4PricesForConfig(c),
 	}
 	legacyProviders := officialLegacyDeepSeekProviders(c)
 	if len(legacyProviders) > 0 {

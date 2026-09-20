@@ -3,6 +3,7 @@ package agent
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"strings"
 
 	"reasonix/internal/provider"
@@ -47,6 +48,26 @@ func (a *Agent) normalizeModelRequestMessages(msgs []provider.Message) []provide
 	return requestMessages
 }
 
+func (a *Agent) resolveRequestImages(ctx context.Context, msgs []provider.Message) ([]provider.Message, error) {
+	if a == nil {
+		return msgs, nil
+	}
+	for _, msg := range msgs {
+		if len(msg.ImageInputs) > 0 {
+			if a.imageResolver == nil {
+				return nil, errors.New("image request resolver is unavailable")
+			}
+			if routed, ok := a.imageResolver.(interface {
+				ResolveRequestImagesForModel(context.Context, []provider.Message, string, bool) ([]provider.Message, error)
+			}); ok {
+				return routed.ResolveRequestImagesForModel(ctx, msgs, a.modelRef, a.imageInput.native)
+			}
+			return a.imageResolver.ResolveRequestImages(ctx, msgs)
+		}
+	}
+	return msgs, nil
+}
+
 func (a *Agent) streamProviderRequest(ctx context.Context, req provider.Request) (<-chan provider.Chunk, error) {
 	if err := provider.ValidateModelTranscript(req.Messages); err != nil {
 		return nil, err
@@ -54,7 +75,7 @@ func (a *Agent) streamProviderRequest(ctx context.Context, req provider.Request)
 	if err := a.checkpointSession(ctx, CheckpointBeforeModel); err != nil {
 		return nil, err
 	}
-	ch, err := a.svc.prov.Stream(ctx, req)
+	ch, err := provider.Stream(ctx, a.svc.prov, req)
 	if err != nil {
 		if limit := provider.AsOutputLimitError(err); !provider.ManagedRecovery(ctx) && limit != nil && req.MaxTokens > limit.MaxOutputTokens {
 			a.learnOutputBudget(limit.MaxOutputTokens)
@@ -63,7 +84,7 @@ func (a *Agent) streamProviderRequest(ctx context.Context, req provider.Request)
 			if checkpointErr := a.checkpointSession(ctx, CheckpointBeforeModel); checkpointErr != nil {
 				return nil, checkpointErr
 			}
-			return a.svc.prov.Stream(ctx, retryReq)
+			return provider.Stream(ctx, a.svc.prov, retryReq)
 		}
 		return nil, err
 	}
@@ -77,6 +98,11 @@ func (a *Agent) streamProviderRequest(ctx context.Context, req provider.Request)
 // Output budgets are resolved only here and never change the compact_ratio
 // trigger. Physical overflow may attempt at most one recovery summary.
 func (a *Agent) prepareSamplingRequest(ctx context.Context) (samplingRequest, error) {
+	// Recover an accepted context-maintenance event before ContextManager can
+	// perform more maintenance or freeze a request from unconfirmed state.
+	if err := a.confirmPendingModelContext(ctx); err != nil {
+		return samplingRequest{}, err
+	}
 	frozen, err := a.buildSamplingRequest(ctx, CompactionTriggerPressure)
 	if err != nil {
 		return samplingRequest{}, err
@@ -117,7 +143,11 @@ func (a *Agent) buildSamplingRequest(ctx context.Context, trigger string) (sampl
 	if err != nil {
 		return samplingRequest{}, err
 	}
-	requestMessages := a.normalizeModelRequestMessages(prepared.Messages)
+	requestMessages, err := a.resolveRequestImages(ctx, prepared.Messages)
+	if err != nil {
+		return samplingRequest{}, err
+	}
+	requestMessages = a.normalizeModelRequestMessages(requestMessages)
 	// context.prepare: extensions may rewrite the message copy feeding THIS
 	// request. The session log is never touched — the replacement is
 	// ephemeral, so the next request starts from the unmodified history.
@@ -198,6 +228,9 @@ func freezeProviderRequest(req provider.Request) provider.Request {
 			}
 			if len(out.Messages[i].Images) > 0 {
 				out.Messages[i].Images = append([]string(nil), out.Messages[i].Images...)
+			}
+			if len(out.Messages[i].ImageInputs) > 0 {
+				out.Messages[i].ImageInputs = provider.CloneImageInputs(out.Messages[i].ImageInputs)
 			}
 			if len(out.Messages[i].ResponsesItems) > 0 {
 				items := make([]json.RawMessage, len(out.Messages[i].ResponsesItems))

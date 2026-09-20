@@ -1,3 +1,5 @@
+import { isShellToolName } from "./shellToolIdentity";
+import { historyToolStatus } from "./historyToolStatus";
 // historyItems converts durable HistoryMessage rows (and legacy HistoryPage
 // payloads) into transcript Items for the single-shot hydration path. The
 // windowed counterpart lives in transcriptStore; both projections must agree
@@ -5,6 +7,7 @@
 import { asArray } from "./array";
 import { historicalResultNotice } from "./completionResultState";
 import { appendNoticeItem, deliveryReadinessDetail, readinessMissingIds } from "./controllerNotices";
+import { appendHistoryAttachmentRefs } from "./historyAttachmentRefs";
 import { createUniqueItemIDAllocator } from "./historyItemIds";
 import { t } from "./i18n";
 import { upsertReadPause } from "./readPause";
@@ -117,7 +120,7 @@ export function historyMessagesToItems(messages: HistoryMessage[], idPrefix: str
     }
     if (m.role === "user") {
       if (m.content.trim() === "") continue;
-      items.push({ kind: "user", id: m.messageId ? `m:${m.messageId}` : recordItemId, messageId: m.messageId, submissionId: m.submissionId, text: m.content, submitText: m.submitText, createdAt: m.createdAt, checkpointTurn: m.checkpointTurn, historyTurn: m.historyTurn });
+      items.push({ kind: "user", id: m.messageId ? `m:${m.messageId}` : recordItemId, messageId: m.messageId, submissionId: m.submissionId, turnId: m.turnId, text: appendHistoryAttachmentRefs(m.content, m.attachments), submitText: m.submitText, createdAt: m.createdAt, checkpointTurn: m.checkpointTurn, historyTurn: m.historyTurn });
       seq++;
       continue;
     }
@@ -135,6 +138,7 @@ export function historyMessagesToItems(messages: HistoryMessage[], idPrefix: str
         serverSearch: m.serverSearch,
       });
       for (const item of built) {
+        item.turnId = m.turnId;
         if (item.kind === "assistant") { item.id = messageItemId ?? `${idPrefix}${seq}`; item.streaming = Boolean(m.pending); }
         items.push(item);
         seq++;
@@ -165,14 +169,15 @@ export function historyMessagesToItems(messages: HistoryMessage[], idPrefix: str
           readOnly: typeof tc.resolvedReadOnly === "boolean" ? tc.resolvedReadOnly : isReadOnlyTool(tc.name),
           resolvedName: tc.resolvedName,
           capabilityId: tc.capabilityId,
-          status: result ? (error ? "error" : "done") : tc.pending ? "running" : "stopped",
+          status: historyToolStatus(result, tc, error),
+          contentState: result && !result.toolResultArchived ? "ready" : "unloaded",
           output,
           error,
           dataArchived: archived || undefined,
           subject: tc.subject,
           summary: summarizeFileDiff(fileDiff) || tc.summary,
           fileDiff,
-          isShell: tc.name === "bash" || (tc.id || "").startsWith("shell-"),
+          isShell: isShellToolName(tc.name) || (tc.id || "").startsWith("shell-"),
           execution: result?.execution,
           presentedFiles: result?.presentedFiles,
         });
@@ -194,7 +199,7 @@ export function historyMessagesToItems(messages: HistoryMessage[], idPrefix: str
         output,
         error,
         dataArchived: m.toolResultArchived || undefined,
-        isShell: (m.toolName || "") === "bash" || (m.toolCallId || "").startsWith("shell-"),
+        isShell: isShellToolName(m.toolName || "") || (m.toolCallId || "").startsWith("shell-"),
         execution: m.execution,
         presentedFiles: m.presentedFiles,
       });

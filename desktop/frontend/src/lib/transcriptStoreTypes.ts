@@ -39,6 +39,11 @@ export interface TranscriptProjection {
   digest: string;
 }
 
+export interface PreparedTranscriptInstall {
+  projection: TranscriptProjection;
+  commit(): void;
+}
+
 export interface LoadOlderResult extends TranscriptProjection {
   /** "prepend": page older items; "reload": cursor went stale, full latest replace. */
   kind: "prepend" | "reload";
@@ -73,6 +78,7 @@ export interface TranscriptContentChange {
 }
 
 export interface SessionTranscript {
+  bindingKey?: string;
   canonicalV2?: boolean;
   latestSequence?: number;
   key: string;
@@ -112,6 +118,8 @@ export interface SessionTranscript {
   revisionKnown: boolean;
   digest: string;
   generation: number;
+  /** Settles when the current fresh-page generation has installed or failed. */
+  generationSettlement?: { generation: number; promise: Promise<void> };
   bodyBytes: number;
   olderInFlight: boolean;
   newerInFlight: boolean;

@@ -146,7 +146,7 @@ func newBrokerTestServer(t *testing.T, opts boot.Options) *Server {
 }
 
 func TestServerCapabilitiesFollowBroker(t *testing.T) {
-	if caps := newBrokerTestServer(t, boot.Options{}).capabilities(); !slices.Equal(caps, []string{capabilityPermissionPresets, capabilityPresentFiles, capabilityExecutionV2, capabilitySessionHistory, capabilityTranscriptOutline}) {
+	if caps := newBrokerTestServer(t, boot.Options{}).capabilities(); !slices.Equal(caps, []string{capabilityPermissionPresets, capabilityPresentFiles, capabilityExecutionV2, capabilitySessionHistory, capabilityExtensionFormInstanceV1, capabilityInteractionTargetV1, capabilityTranscriptOutline}) {
 		t.Fatalf("capabilities without broker = %v", caps)
 	}
 	broker, err := NewBrowserBroker("http://127.0.0.1:9999", "tok")
@@ -155,7 +155,7 @@ func TestServerCapabilitiesFollowBroker(t *testing.T) {
 	}
 	srv := newBrokerTestServer(t, boot.Options{BrowserExecutor: broker})
 	caps := srv.capabilities()
-	if !slices.Equal(caps, []string{capabilityPermissionPresets, capabilityPresentFiles, capabilityExecutionV2, capabilitySessionHistory, capabilityBrowser, capabilityTranscriptOutline}) {
+	if !slices.Equal(caps, []string{capabilityPermissionPresets, capabilityPresentFiles, capabilityExecutionV2, capabilitySessionHistory, capabilityExtensionFormInstanceV1, capabilityInteractionTargetV1, capabilityBrowser, capabilityTranscriptOutline}) {
 		t.Fatalf("capabilities with broker = %v", caps)
 	}
 }
@@ -165,12 +165,19 @@ func TestServerAdvertisesImmutableSessionIdentityOnlyForExclusiveV3(t *testing.T
 	if err != nil {
 		t.Fatal(err)
 	}
-	t.Cleanup(func() { _ = service.CloseAll(context.Background()) })
+	t.Cleanup(func() {
+		if err := service.Shutdown(context.Background()); err != nil {
+			t.Errorf("shutdown session service: %v", err)
+		}
+	})
 	ctrl := control.New(control.Options{SessionService: service, ExclusiveSession: true})
 	defer ctrl.Close()
 	srv := New(ctrl, NewBroadcaster(), config.ServeConfig{})
 	if !slices.Contains(srv.capabilities(), capabilitySessionIdentityV1) || !slices.Contains(srv.capabilities(), capabilitySessionContentV1) || !slices.Contains(srv.capabilities(), capabilitySessionReadV2) || !slices.Contains(srv.capabilities(), capabilityGoalLifecycleV2) {
 		t.Fatalf("exclusive v3 capabilities = %v", srv.capabilities())
+	}
+	if slices.Contains(srv.capabilities(), capabilityAttachmentsV1) {
+		t.Fatal("serve must not advertise attachments-v1; draft staging is a local desktop host capability")
 	}
 }
 
@@ -232,10 +239,10 @@ func TestHandshakeAdvertisesBrowserCapability(t *testing.T) {
 			t.Fatalf("handshake status = %d, want 204", resp.StatusCode)
 		}
 		got := resp.Header.Get(capabilitiesHeader)
-		if withBroker && got != capabilityPermissionPresets+","+capabilityPresentFiles+","+capabilityExecutionV2+","+capabilitySessionHistory+","+capabilityBrowser+","+capabilityTranscriptOutline {
+		if withBroker && got != capabilityPermissionPresets+","+capabilityPresentFiles+","+capabilityExecutionV2+","+capabilitySessionHistory+","+capabilityExtensionFormInstanceV1+","+capabilityInteractionTargetV1+","+capabilityBrowser+","+capabilityTranscriptOutline {
 			t.Fatalf("capabilities header = %q, want permission, present-files, browser and outline capabilities", got)
 		}
-		if !withBroker && got != capabilityPermissionPresets+","+capabilityPresentFiles+","+capabilityExecutionV2+","+capabilitySessionHistory+","+capabilityTranscriptOutline {
+		if !withBroker && got != capabilityPermissionPresets+","+capabilityPresentFiles+","+capabilityExecutionV2+","+capabilitySessionHistory+","+capabilityExtensionFormInstanceV1+","+capabilityInteractionTargetV1+","+capabilityTranscriptOutline {
 			t.Fatalf("capabilities header = %q, want permission, present-files and outline capabilities", got)
 		}
 	}

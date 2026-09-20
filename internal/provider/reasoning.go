@@ -18,6 +18,8 @@ type ReasoningOption struct {
 type ReasoningCapability struct {
 	Options []ReasoningOption `json:"options"`
 	Default string            `json:"default,omitempty"`
+	// Unknown distinguishes missing metadata from a declared lack of controls.
+	Unknown bool `json:"unknown,omitempty"`
 }
 
 type ReasoningProvider interface{ ReasoningCapability() ReasoningCapability }
@@ -27,10 +29,29 @@ type ReasoningProvider interface{ ReasoningCapability() ReasoningCapability }
 type UnsupportedReasoningEffort struct {
 	Model, Effort string
 	Supported     []string
+	Unknown       bool
 }
 
 func (e *UnsupportedReasoningEffort) Error() string {
+	if e.Unknown {
+		return fmt.Sprintf("UNKNOWN_MODEL_REASONING: reasoning levels for model %q are not declared; cannot validate %q. Select auto or configure this model's reasoning_protocol and supported_efforts", e.Model, e.Effort)
+	}
 	return fmt.Sprintf("UNSUPPORTED_REASONING_EFFORT: model %q does not support %q (supported: %v)", e.Model, e.Effort, e.Supported)
+}
+
+// UnknownReasoning allows provider-default requests without inventing controls.
+func UnknownReasoning() ReasoningCapability {
+	return ReasoningCapability{Options: []ReasoningOption{}, Unknown: true}
+}
+
+func (c ReasoningCapability) State() string {
+	if c.Unknown {
+		return "unknown"
+	}
+	if len(c.Options) == 0 {
+		return "unsupported"
+	}
+	return "supported"
 }
 func (c ReasoningCapability) IDs() []string {
 	ids := make([]string, 0, len(c.Options))
@@ -53,13 +74,13 @@ func (c ReasoningCapability) Validate(model, effort string) error {
 		seen[id] = true
 	}
 	if c.Default != "" && !slices.Contains(ids, c.Default) {
-		return &UnsupportedReasoningEffort{Model: model, Effort: c.Default, Supported: ids}
+		return &UnsupportedReasoningEffort{Model: model, Effort: c.Default, Supported: ids, Unknown: c.Unknown}
 	}
 	if effort == "" {
 		return nil
 	}
 	if !slices.Contains(c.IDs(), effort) {
-		return &UnsupportedReasoningEffort{Model: model, Effort: effort, Supported: c.IDs()}
+		return &UnsupportedReasoningEffort{Model: model, Effort: effort, Supported: c.IDs(), Unknown: c.Unknown}
 	}
 	return nil
 }
@@ -105,7 +126,7 @@ func ReasoningForConfig(kind string, cfg Config) ReasoningCapability {
 	if resolve, ok := reasoningRegistry[kind]; ok {
 		return resolve(cfg).Clone()
 	}
-	return ReasoningOptions("")
+	return UnknownReasoning()
 }
 
 // RestrictReasoning keeps deployment declarations within a fixed wire protocol.

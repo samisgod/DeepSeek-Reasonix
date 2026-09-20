@@ -1,4 +1,5 @@
 import type { Item } from "./useController";
+import { isShellToolName, isPowerShellToolName } from "./shellToolIdentity";
 
 export type ToolItem = Extract<Item, { kind: "tool" }>;
 export type ToolPresentationKind = "search" | "web" | "shell" | "agent" | "file" | "present" | "tool";
@@ -17,18 +18,18 @@ export function toolPresentation(item: ToolItem): {
     case "background_started": return { state: "stopped", dot: "ongoing", label: "chat.background" };
     case "failed": return { state: "error", dot: "error", label: "chat.failed", exitCode: execution.exitCode };
     case "completed":
-      if (execution.exitCode == null) return { state: "stopped", dot: "idle", label: "chat.unknown" };
+      if (execution.exitCode == null) return { state: "unknown", dot: "idle", label: "chat.unknown" };
       return execution.exitCode === 0 ? { state: "done", dot: "done", label: "chat.done", exitCode: 0 }
         : { state: "error", dot: "error", label: "chat.failed", exitCode: execution.exitCode };
   }
   if (item.status === "running") return { state: "running", dot: "ongoing", label: "chat.running" };
-  if (item.resultMissing) return { state: "stopped", dot: "idle", label: "chat.unknown" };
+  if (item.resultMissing || item.status === "unknown") return { state: "unknown", dot: "idle", label: "chat.unknown" };
   if (item.status === "error" || item.error || (execution?.exitCode != null && execution.exitCode !== 0)) {
     return { state: "error", dot: "error", label: "chat.failed", exitCode: execution?.exitCode };
   }
   if (item.status === "stopped") return { state: "stopped", dot: "warning", label: "chat.stopped" };
   if (classifyTool(item) === "shell" && (execution?.exitCode == null || (execution.state && execution.state !== "running"))) {
-    return { state: "stopped", dot: "idle", label: "chat.unknown" };
+    return { state: "unknown", dot: "idle", label: "chat.unknown" };
   }
   return { state: "done", dot: "done", label: "chat.done", exitCode: execution?.exitCode };
 }
@@ -47,14 +48,14 @@ export function classifyTool(item: ToolItem): ToolPresentationKind {
   if (item.name === "present") return "present";
   if (item.name === "web_search") return "search";
   if (item.name === "web_fetch") return "web";
-  if (item.name === "bash" || item.isShell) return "shell";
+  if (isShellToolName(item.name) || item.isShell) return "shell";
   if (AGENT_TOOLS.has(item.name)) return "agent";
   if (FILE_TOOLS.has(item.name)) return "file";
   return "tool";
 }
 
 export function shellDisplayName(item: ToolItem): string {
-  const shell = item.execution?.shell?.trim().toLowerCase();
+  const shell = item.execution?.shell?.trim().toLowerCase() || (isPowerShellToolName(item.name) ? "pwsh" : "");
   if (shell === "powershell" || shell === "pwsh") return "PowerShell";
   if (shell === "git-bash") return "Git Bash";
   if (shell === "bash") return "Bash";

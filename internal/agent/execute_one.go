@@ -138,7 +138,7 @@ func contextualToolGateOutcome(ctx context.Context, target tool.Tool, name strin
 	switch name {
 	case "get_goal", "create_goal", "update_goal":
 		msg = "goal tools require the current top-level host-attested goal context — no goal state was changed"
-	case "bash_output", "wait", "kill_shell":
+	case "job_output", "job_kill", "bash_output", "wait", "kill_shell":
 		msg = "background jobs are not available in this context"
 	}
 	return toolOutcome{output: msg, blocked: true, errMsg: firstLine(msg)}, true
@@ -549,9 +549,9 @@ func (a *Agent) observeBeforeMutation(ctx context.Context, plan *toolCallPlan) {
 			}
 		}
 		// Non-previewable writers: record a coverage gap (do not guess paths).
-		switch toolName {
-		case "bash":
-			obs.RecordGap(checkpoint.CoverageGap{Reason: checkpoint.GapBashSideEffect, Tool: toolName, Detail: "bash side effects are not path-tracked"})
+		switch {
+		case tool.IsShellToolName(toolName):
+			obs.RecordGap(checkpoint.CoverageGap{Reason: checkpoint.GapBashSideEffect, Tool: toolName, Detail: "shell side effects are not path-tracked"})
 		default:
 			// MCP or other writers without Previewer.
 			if !plan.readOnly {

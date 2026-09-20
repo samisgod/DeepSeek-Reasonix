@@ -9,6 +9,9 @@ import { asArray } from "../lib/array";
 import { filterAtMatches } from "../lib/atMatches";
 import { DedupIndex, sha256 } from "../lib/attachDedup";
 import { app, onFilesDropped } from "../lib/bridge";
+import { attachmentExt, attachmentName, baseName, formatAttachmentDisplayReference, hasImageAttachments, sortComposerAttachments, type Attachment } from "../lib/composerAttachments";
+import type { PastedBlock, PersistentComposerDraft, PersistentComposerTarget, WorkspaceReference } from "../lib/composerDraftTypes";
+import type { ComposerTarget } from "../generated/desktopContract.generated";
 import { desktopHost } from "../lib/desktopHost";
 import { steerInboxItemForActiveTurn } from "../lib/inboxSubmit";
 import { formatInboxError, isInboxItemMissing } from "../lib/inboxError";
@@ -17,6 +20,7 @@ import { useComposerInboxRefresh } from "../lib/useComposerInboxRefresh";
 import { useComposerImeGuard } from "../lib/useComposerImeGuard";
 import { useComposerCommandCatalog } from "../lib/useComposerCommandCatalog";
 import { guidanceIsInFlight, guidanceNeedsRetry, guidanceTextMatches, kickIdleGuidance, markGuidanceQueued } from "../lib/composerGuidance";
+import { createGuidanceReceiptTracker, type GuidanceReceiptTracker } from "../lib/composerGuidanceReceipt";
 import { canUsePromptHistory, composerEnterAction, composerEscapeAction, composerMenuKeyAction, insertComposerNewline, isFnKeyEvent, isImeKeyEvent, promptHistoryDirectionFromEvent } from "../lib/composerKeyboard";
 import { cacheGeneration, loadOlder } from "../lib/composerHistory";
 import { sessionTurnsLabel } from "../lib/sessionTurnsPresentation";
@@ -45,8 +49,9 @@ import { resolveComposerContentSizing } from "../lib/composerSizing";
 import { useToast } from "../lib/toast";
 import { readStatusLabel, turnPhaseStatusLabel } from "../lib/readStatus";
 import { fullAccessProjectConfirmationKey } from "../lib/fullAccessConfirmation";
-import { normalizeToolApprovalMode, type CollaborationMode, type CommandInfo, type ComposerInsertRequest, type ContextInfo, type DirEntry, type EffortInfo, type GoalLifecycleView, type GoalRuntime, type HistoryMessage, type Mode, type PromptHistoryEntry, type SessionMeta, type SessionReference, type SlashArgItem, type SlashArgsResult, type ToolApprovalMode, type BalanceInfo, type WireReadStatus } from "../lib/types";
+import { normalizeToolApprovalMode, type CollaborationMode, type CommandInfo, type ComposerInsertRequest, type ContextInfo, type DirEntry, type EffortInfo, type GoalLifecycleView, type GoalRuntime, type HistoryMessage, type Mode, type PromptHistoryEntry, type SessionMeta, type SessionReference, type SlashArgItem, type SlashArgsResult, type TabMeta, type ToolApprovalMode, type BalanceInfo, type WireReadStatus } from "../lib/types";
 import { ComposerPinnedFilesShelf } from "./ComposerPinnedFilesShelf";
+import type { ComposerWorkspaceContext } from "./ComposerWorkspaceContextBar";
 import {
   formatWorkspaceReference,
   parseWorkspaceReference,
@@ -59,8 +64,10 @@ import { ANCHORED_POPOVER_CLOSE_MS, AnchoredPopover } from "./AnchoredPopover";
 import { ComposerChoice } from "./ComposerChoice";
 import { PermissionPresetChoice } from "./PermissionPresetChoice";
 const ModelSwitcher = lazy(() => import("./ModelSwitcher").then((module) => ({ default: module.ModelSwitcher })));
+const ComposerWorkspaceContextBar = lazy(() => import("./ComposerWorkspaceContextBar"));
 import { Tooltip } from "./Tooltip";
 const RecoveryWaitBanner = lazy(() => import("./RecoveryWaitBanner").then((module) => ({ default: module.RecoveryWaitBanner })));
+const AuthenticationRecoveryActions = lazy(() => import("./AuthenticationRecoveryActions").then((module) => ({ default: module.AuthenticationRecoveryActions })));
 import { ComposerContextCard } from "./ComposerContextCard";
 import { Markdown } from "./Markdown";
 import { CodeViewer } from "./CodeViewer";
@@ -92,21 +99,11 @@ import { formatGoalWorkTime } from "../lib/goalRuntime";
 import { ComposerContentMenuActions } from "./ComposerContentMenuActions";
 import { GoalLifecycleActions } from "./GoalLifecycleActions";
 
-interface Attachment {
-  path: string;
-  previewUrl?: string;
-  displayName?: string;
-}
+export type { PersistentComposerDraft } from "../lib/composerDraftTypes";
 
 interface AttachmentDedupKey {
   hash: string;
   source: string;
-}
-
-export interface WorkspaceReference {
-  path: string;
-  isDir?: boolean;
-  displayPath?: string;
 }
 
 const LONG_PASTE_MIN_CHARS = 2000;
@@ -122,7 +119,29 @@ const COMPOSER_AUTO_RESERVED_HEIGHT = 58;
 const PROMPT_HISTORY_PREFETCH_REMAINING = 3;
 const FILE_REF_SEARCH_CACHE_TTL_MS = 5000;
 const ComposerGuidanceShelf = lazy(() => import("./ComposerGuidanceShelf").then((module) => ({ default: module.ComposerGuidanceShelf })));
-type PastedBlock = { label: string; text: string };
+const loadAttachmentSubmit = () => import("../lib/attachmentSubmit");
+// Resolve functional updates synchronously, outside React's deferred updater.
+// The store receives only the field changed by the event, never an old snapshot.
+function useComposerField<K extends keyof PersistentComposerDraft>(key: K, initial: PersistentComposerDraft[K], owner: { current: PersistentComposerTarget | undefined }, restoring: { current: boolean }) {
+  const [value, setValue] = useState(initial);
+  const latest = useRef(initial);
+  const set = (update: PersistentComposerDraft[K] | ((previous: PersistentComposerDraft[K]) => PersistentComposerDraft[K])) => {
+    const target = owner.current;
+    if (!restoring.current && target?.canEdit && !target.canEdit(target.draftId, target.generation)) return;
+    const next = typeof update === "function" ? update(latest.current) : update;
+    latest.current = next;
+    setValue(next);
+    if (!restoring.current && target) {
+      if (target.onPatch) target.onPatch(target.draftId, target.generation, { [key]: next });
+      else {
+        const content = { ...target.initial, [key]: next };
+        owner.current = { ...target, initial: content };
+        target.onChange(target.draftId, target.generation, content);
+      }
+    }
+  };
+  return [value, set] as const;
+}
 
 type FileRefSearchCacheEntry = {
   entries: DirEntry[];
@@ -176,43 +195,8 @@ type WebkitFileEntry = {
   isDirectory?: boolean;
 };
 
-type GuidanceReceiptTracker = {
-  start(draftKey: string): void;
-  recordConsumed(draftKey: string, itemId: string): void;
-  takeConsumed(draftKey: string, itemId: string): boolean;
-  finish(draftKey: string): void;
-};
-
 const DEFAULT_COMPOSER_DRAFT_KEY = "__default_composer_draft__";
 const MAX_COMPOSER_EDIT_HISTORY = 50;
-
-function createGuidanceReceiptTracker(): GuidanceReceiptTracker {
-  const inFlight = new Map<string, number>();
-  const consumedBeforeReceipt = new Map<string, Set<string>>();
-  return {
-    start(draftKey) {
-      inFlight.set(draftKey, (inFlight.get(draftKey) ?? 0) + 1);
-    },
-    recordConsumed(draftKey, itemId) {
-      if ((inFlight.get(draftKey) ?? 0) === 0) return;
-      const consumed = consumedBeforeReceipt.get(draftKey) ?? new Set<string>();
-      consumed.add(itemId);
-      consumedBeforeReceipt.set(draftKey, consumed);
-    },
-    takeConsumed(draftKey, itemId) {
-      return consumedBeforeReceipt.get(draftKey)?.delete(itemId) ?? false;
-    },
-    finish(draftKey) {
-      const remaining = (inFlight.get(draftKey) ?? 1) - 1;
-      if (remaining > 0) {
-        inFlight.set(draftKey, remaining);
-        return;
-      }
-      inFlight.delete(draftKey);
-      consumedBeforeReceipt.delete(draftKey);
-    },
-  };
-}
 
 function lineCount(s: string): number {
   if (s === "") return 0;
@@ -225,40 +209,6 @@ function shouldFoldPaste(s: string): boolean {
 
 function renderPastedBlock(block: PastedBlock): string {
   return `${block.label}\n\n--- Begin ${block.label} ---\n${block.text}\n--- End ${block.label} ---`;
-}
-
-function baseName(path: string): string {
-  const clean = path.replace(/[\\/]+$/, "");
-  return clean.split(/[\\/]/).filter(Boolean).pop() ?? path;
-}
-
-function attachmentName(attachment: Attachment): string {
-  return (attachment.displayName || baseName(attachment.path) || "attachment").trim();
-}
-
-function attachmentExt(name: string): string {
-  const dot = name.lastIndexOf(".");
-  return dot >= 0 ? name.slice(dot + 1).toUpperCase() : "";
-}
-
-function hasImageAttachments(items: Attachment[]): boolean {
-  return items.some((attachment) => Boolean(attachment.previewUrl));
-}
-
-function displayRefName(name: string): string {
-  return name.replace(/[\[\]\(\)\r\n]+/g, " ").replace(/\s+/g, " ").trim() || "attachment";
-}
-
-function formatAttachmentDisplayReference(attachment: Attachment): string {
-  return `@[${displayRefName(attachmentName(attachment))}](${attachment.path})`;
-}
-
-function sortComposerAttachments(items: Attachment[]): Attachment[] {
-  return [...items].sort((a, b) => {
-    const ai = a.previewUrl ? 0 : 1;
-    const bi = b.previewUrl ? 0 : 1;
-    return ai - bi;
-  });
 }
 
 function workspaceReferenceKey(ref: WorkspaceReference): string {
@@ -313,6 +263,33 @@ function emptyComposerDraft(): ComposerDraft {
     guidanceSendingId: null,
     pendingPaste: 0,
     submitting: false,
+  };
+}
+
+function persistentComposerDraft(value: PersistentComposerDraft): ComposerDraft {
+  return {
+    ...emptyComposerDraft(),
+    text: value.text ?? "",
+    invocations: value.invocations ?? [],
+    attachments: value.attachments ?? [],
+    workspaceRefs: value.workspaceRefs ?? [],
+    pastedBlocks: value.pastedBlocks ?? [],
+    openPastedLabels: value.openPastedLabels ?? [],
+    sessionRefs: value.sessionRefs ?? [],
+    selectedTextRefs: value.selectedTextRefs ?? [],
+  };
+}
+
+function persistentSnapshot(draft: ComposerDraft): PersistentComposerDraft {
+  return {
+    text: draft.text,
+    invocations: draft.invocations,
+    attachments: draft.attachments,
+    workspaceRefs: draft.workspaceRefs,
+    pastedBlocks: draft.pastedBlocks,
+    openPastedLabels: draft.openPastedLabels,
+    sessionRefs: draft.sessionRefs,
+    selectedTextRefs: draft.selectedTextRefs,
   };
 }
 
@@ -579,6 +556,7 @@ export function Composer({
   disabled,
   submitDisabled = false,
   submitDisabledReason,
+  authentication,
   readOnly = false,
   decisionPending = false,
   ready,
@@ -622,7 +600,13 @@ export function Composer({
   cacheMissTokens,
   balance,
   pinnedFiles,
+  workspaceContext,
   onInvocationMetadataChange,
+  onCaptureSubmit,
+  onReleaseSubmit,
+  onPrepareSubmit,
+  persistentDraft,
+  composerTarget,
 }: {
   running: boolean;
   collaborationMode: CollaborationMode;
@@ -646,7 +630,10 @@ export function Composer({
   attachmentInputEnabled?: boolean;
   tabId?: string; turnId?: string;
   effort?: EffortInfo;
-  onSend: (displayText: string, submitText?: string, tabId?: string, structured?: StructuredInvocationSubmit) => void | Promise<void>;
+  onSend: (displayText: string, submitText?: string, tabId?: string, structured?: StructuredInvocationSubmit, capture?: unknown) => void | Promise<void>;
+  onCaptureSubmit?: (content: PersistentComposerDraft) => unknown;
+  onReleaseSubmit?: (capture: unknown) => void;
+  onPrepareSubmit?: (capture: unknown) => Promise<void>;
   onInvocationMetadataChange?: (metadata: Record<string, { kind: "skill" | "subagent"; color?: string }>) => void;
   onSteer?: (submitText: string, tabId?: string) => void | Promise<void>;
   /** False when the owning surface provides its own durable remote inbox. */
@@ -669,6 +656,7 @@ export function Composer({
   disabled?: boolean;
   submitDisabled?: boolean;
   submitDisabledReason?: string;
+  authentication?: TabMeta["authentication"];
   readOnly?: boolean;
   decisionPending?: boolean;
   // ready/cwd/running/workspaceScopeKey re-trigger the command fetch: Commands() returns only
@@ -737,6 +725,9 @@ export function Composer({
   cacheMissTokens?: number;
   balance?: BalanceInfo;
   pinnedFiles?: import("../lib/pinnedContextBridge").PinnedFileInfo[];
+  workspaceContext?: ComposerWorkspaceContext;
+  persistentDraft?: PersistentComposerTarget;
+  composerTarget?: ComposerTarget;
 }) {
   const { t, locale } = useI18n();
   const { showToast } = useToast();
@@ -750,6 +741,11 @@ export function Composer({
     remoteHostId: inboxHostId,
   });
   const draftKey = sessionKey || tabId || DEFAULT_COMPOSER_DRAFT_KEY;
+	const bridgeTarget = useMemo(() => composerTarget?.kind === "draft"
+		? { kind: "draft", draftId: composerTarget.draftId, tabId: "", generation: persistentDraft?.generation ?? composerTarget.generation ?? 0 }
+		: { kind: "session", draftId: "", tabId: composerTarget?.tabId ?? tabId ?? "" },
+	[composerTarget?.kind, composerTarget?.kind === "draft" ? composerTarget.draftId : composerTarget?.tabId, persistentDraft?.generation, tabId]);
+	const bridgeTargetKey = `${bridgeTarget.kind}:${bridgeTarget.draftId}:${bridgeTarget.tabId}:${bridgeTarget.generation ?? 0}`;
   const runtimeState = useRuntimeSession(tabId, inboxSessionPath);
   const finishing = runtimeState.finishing;
   if (runtimeState.known) running = runtimeState.running ?? running;
@@ -760,8 +756,11 @@ export function Composer({
   const pendingFollowup = useSyncExternalStore(pendingFollowups.subscribe, () => pendingFollowups.get(pendingKey));
   const inboxSessionKey = inboxScopeKey(inboxSessionPath, workspaceScopeKey);
   const now = useTick(running);
-  const [text, setText] = useState("");
-  const [attachments, setAttachments] = useState<Attachment[]>([]);
+  const persistentOwner = useRef(persistentDraft);
+  persistentOwner.current = persistentDraft;
+  const restoringContent = useRef(false);
+  const [text, setText] = useComposerField("text", "", persistentOwner, restoringContent);
+  const [attachments, setAttachments] = useComposerField("attachments", [], persistentOwner, restoringContent);
   const [imageViewer, setImageViewer] = useState<{ open: boolean; url: string; name: string }>({ open: false, url: "", name: "" });
   const openComposerImageViewer = useCallback((url: string, name: string) => {
     setImageViewer({ open: true, url, name });
@@ -771,13 +770,13 @@ export function Composer({
     setImageViewer((prev) => (prev.open ? { ...prev, open: false } : prev));
   }, []);
 
-  const [workspaceRefs, setWorkspaceRefs] = useState<WorkspaceReference[]>([]);
-  const [invocations, setInvocations] = useState<ComposerInvocation[]>([]);
+  const [workspaceRefs, setWorkspaceRefs] = useComposerField("workspaceRefs", [], persistentOwner, restoringContent);
+  const [invocations, setInvocations] = useComposerField("invocations", [], persistentOwner, restoringContent);
   const [plainSelection, setPlainSelection] = useState<RichComposerSelection>({ start: 0, end: 0 });
   const [richSelection, setRichSelection] = useState<RichComposerSelection>({ start: 0, end: 0 });
   const [richSlashQuery, setRichSlashQuery] = useState<RichSlashQuery | null>(null);
-  const [pastedBlocks, setPastedBlocks] = useState<PastedBlock[]>([]);
-  const [openPastedLabels, setOpenPastedLabels] = useState<string[]>([]);
+  const [pastedBlocks, setPastedBlocks] = useComposerField("pastedBlocks", [], persistentOwner, restoringContent);
+  const [openPastedLabels, setOpenPastedLabels] = useComposerField("openPastedLabels", [], persistentOwner, restoringContent);
   const [pendingPaste, setPendingPaste] = useState(0);
   const pendingPasteRef = useRef(0);
   const pastedBlocksRef = useRef<PastedBlock[]>([]);
@@ -799,8 +798,8 @@ export function Composer({
   const [directPastChats, setDirectPastChats] = useState(false);
   const [pastChats, setPastChats] = useState<SessionMeta[]>([]);
   const [pastChatQuery, setPastChatQuery] = useState("");
-  const [sessionRefs, setSessionRefs] = useState<SessionReference[]>([]);
-  const [selectedTextRefs, setSelectedTextRefs] = useState<SelectedTextReference[]>([]);
+  const [sessionRefs, setSessionRefs] = useComposerField("sessionRefs", [], persistentOwner, restoringContent);
+  const [selectedTextRefs, setSelectedTextRefs] = useComposerField("selectedTextRefs", [], persistentOwner, restoringContent);
   const [pendingGuidance, setPendingGuidance] = useState<PendingGuidance[]>([]);
   const [guidanceExpanded, setGuidanceExpanded] = useState(false);
   const [guidanceSendingId, setGuidanceSendingId] = useState<string | null>(null);
@@ -855,6 +854,7 @@ export function Composer({
   const selfDispatchedGuidanceByDraftRef = useRef<Record<string, string[]>>({});
   const submittingRef = useRef(false);
   const nativeClipboardPasteTimerRef = useRef<number | null>(null);
+  const nativeClipboardPasteCompletionRef = useRef<(() => void) | null>(null);
   // Snapshot of the current cwd so async callbacks (openPastChats) can detect
   // workspace switches and discard stale responses (issue #3601).
   const cwdRef = useRef(cwd);
@@ -862,7 +862,13 @@ export function Composer({
   const attachmentDedupRef = useRef(new DedupIndex());
   const attachmentDedupKeysRef = useRef<Record<string, AttachmentDedupKey>>({});
   const guidanceQueuePreviewKey = (guidanceQueuePreviewItems ?? []).map((item) => item.trim()).filter(Boolean).join("\n");
-  const draftsBySessionRef = useRef<Record<string, ComposerDraft>>({});
+  const draftsBySessionRef = useRef<Record<string, ComposerDraft>>(
+    persistentDraft ? { [draftKey]: persistentComposerDraft(persistentDraft.initial) } : {},
+  );
+  const persistentTargetsByDraftRef = useRef<Record<string, PersistentComposerTarget | undefined>>({});
+  const bridgeTargetsByDraftRef = useRef<Record<string, typeof bridgeTarget>>({});
+  persistentTargetsByDraftRef.current[draftKey] = persistentDraft;
+  bridgeTargetsByDraftRef.current[draftKey] = bridgeTarget;
   const activeDraftKeyRef = useRef(draftKey);
   const draftActivationEpochRef = useRef(0);
   const textRef = useRef(text);
@@ -919,6 +925,7 @@ export function Composer({
   });
 
   const restoreComposerDraft = (draft: ComposerDraft) => {
+    restoringContent.current = true;
     const next = cloneComposerDraft(draft);
     textRef.current = next.text;
     invocationsRef.current = next.invocations;
@@ -936,6 +943,7 @@ export function Composer({
     setOpenPastedLabels(next.openPastedLabels);
     setSessionRefs(next.sessionRefs);
     setSelectedTextRefs(next.selectedTextRefs);
+    restoringContent.current = false;
     attachmentDedupKeysRef.current = next.attachmentDedupKeys;
     attachmentDedupRef.current = attachmentDedupFromKeys(next.attachmentDedupKeys);
     nextPasteId.current = next.nextPasteId;
@@ -1243,6 +1251,56 @@ export function Composer({
     restoreComposerDraft(draftsBySessionRef.current[draftKey] ?? emptyComposerDraft());
   }, [draftKey]);
 
+  const loadedPersistentDraftIdentityRef = useRef<string | null>(null);
+  const persistedSnapshotByDraftRef = useRef<Record<string, string>>({});
+  useLayoutEffect(() => {
+    if (!persistentDraft) return;
+    const identity = `${draftKey}:${persistentDraft.draftId}:${persistentDraft.generation}`;
+    if (loadedPersistentDraftIdentityRef.current === identity) {
+      // The external store may add a background attachment or regenerated
+      // preview. Project fields without resetting cursor/menu/IME state.
+      if (!persistentDraft.onPatch || JSON.stringify(persistentSnapshot(snapshotComposerDraft())) === JSON.stringify(persistentDraft.initial)) return;
+      const content = persistentDraft.initial;
+      restoringContent.current = true;
+      textRef.current = content.text; setText(content.text);
+      invocationsRef.current = content.invocations; setInvocations(content.invocations);
+      attachmentsRef.current = content.attachments; setAttachments(content.attachments);
+      workspaceRefsRef.current = content.workspaceRefs; setWorkspaceRefs(content.workspaceRefs);
+      pastedBlocksRef.current = content.pastedBlocks; setPastedBlocks(content.pastedBlocks);
+      openPastedLabelsRef.current = content.openPastedLabels; setOpenPastedLabels(content.openPastedLabels);
+      sessionRefsRef.current = content.sessionRefs; setSessionRefs(content.sessionRefs);
+      selectedTextRefsRef.current = content.selectedTextRefs; setSelectedTextRefs(content.selectedTextRefs);
+      restoringContent.current = false;
+      return;
+    }
+    loadedPersistentDraftIdentityRef.current = identity;
+    const next = persistentComposerDraft(persistentDraft.initial);
+    draftsBySessionRef.current[draftKey] = next;
+    persistedSnapshotByDraftRef.current[draftKey] = JSON.stringify(persistentSnapshot(next));
+    restoreComposerDraft(next);
+  }, [draftKey, persistentDraft?.draftId, persistentDraft?.generation, persistentDraft?.initial]);
+
+  const persistentSnapshotForDraft = (targetDraftKey: string): PersistentComposerDraft => (
+    targetDraftKey === activeDraftKeyRef.current
+      ? persistentSnapshot(snapshotComposerDraft())
+      : persistentSnapshot(draftsBySessionRef.current[targetDraftKey] ?? emptyComposerDraft())
+  );
+
+  const publishPersistentDraft = (targetDraftKey: string) => {
+    const target = persistentTargetsByDraftRef.current[targetDraftKey];
+    if (!target || target.onPatch) return;
+    const snapshot = persistentSnapshotForDraft(targetDraftKey);
+    const serialized = JSON.stringify(snapshot);
+    if (persistedSnapshotByDraftRef.current[targetDraftKey] === serialized) return;
+    persistedSnapshotByDraftRef.current[targetDraftKey] = serialized;
+    target.onChange(target.draftId, target.generation, snapshot);
+  };
+
+  const trackPersistentTask = <T,>(targetDraftKey: string, promise: Promise<T>): Promise<T> => {
+    const target = persistentTargetsByDraftRef.current[targetDraftKey];
+    return target?.trackTask ? target.trackTask(target.draftId, target.generation, promise) : promise;
+  };
+
   const applyInboxQueue = useCallback((items: PendingGuidance[]) => updatePendingGuidanceForDraft(draftKey, () => items), [draftKey]);
   const collapseInboxQueue = useCallback(() => setGuidanceExpanded(false), []);
   const refreshInboxQueue = useCallback(() => setGuidanceRetryNonce((value) => value + 1), []);
@@ -1258,6 +1316,8 @@ export function Composer({
     if (nativeClipboardPasteTimerRef.current === null) return;
     window.clearTimeout(nativeClipboardPasteTimerRef.current);
     nativeClipboardPasteTimerRef.current = null;
+    nativeClipboardPasteCompletionRef.current?.();
+    nativeClipboardPasteCompletionRef.current = null;
   };
 
   useEffect(() => () => clearNativeClipboardPasteTimer(), []);
@@ -1430,7 +1490,7 @@ export function Composer({
     }
     let live = true;
     app
-      .ListDirForTab(fileRefTabId, unescapeRefPath(atDir))
+      .ListDirForTarget(bridgeTarget, unescapeRefPath(atDir))
       .then((es) => {
         const list = asArray(es);
         if (!live) return;
@@ -1443,7 +1503,7 @@ export function Composer({
     };
     // Re-fetch when the menu opens, the directory level changes, or the
     // workspace tree refreshes; cached data is only a fast first paint.
-  }, [atRaw === null, atDir, fileRefRefreshKey, fileRefScopeKey, fileRefTabId]);
+  }, [atRaw === null, atDir, fileRefRefreshKey, fileRefScopeKey, bridgeTargetKey]);
   useEffect(() => {
     if (atRaw === null || atDir !== "" || atFrag === "") {
       setSearchEntries([]);
@@ -1458,7 +1518,7 @@ export function Composer({
     }
     let live = true;
     app
-      .SearchFileRefsForTab(fileRefTabId, atFrag)
+      .SearchFileRefsForTarget(bridgeTarget, atFrag)
       .then((es) => {
         const list = asArray(es);
         if (!live) return;
@@ -1469,7 +1529,7 @@ export function Composer({
     return () => {
       live = false;
     };
-  }, [atRaw === null, atDir, atFrag, fileRefRefreshKey, fileRefScopeKey, fileRefTabId]);
+  }, [atRaw === null, atDir, atFrag, fileRefRefreshKey, fileRefScopeKey, bridgeTargetKey]);
   const atMatches = useMemo(
     () => {
       if (atRaw === null) return [];
@@ -1885,13 +1945,20 @@ export function Composer({
     return draft ? draftHasAttachmentDedupKey(draft, key) : false;
   };
 
-  const addAttachmentToDraft = (targetDraftKey: string, attachment: Attachment, key: AttachmentDedupKey): boolean => {
+  const addAttachmentToDraft = (targetDraftKey: string, attachment: Attachment, key: AttachmentDedupKey, owner?: PersistentComposerTarget): boolean => {
+    if (owner?.isCurrent && !owner.isCurrent(owner.draftId, owner.generation)) return false;
+    if (owner?.onPatch) {
+      owner.onPatch(owner.draftId, owner.generation, content => ({ ...content, attachments: content.attachments.some(item => item.path === attachment.path) ? content.attachments : [...content.attachments, attachment] }));
+      if (targetDraftKey === activeDraftKeyRef.current) rememberAttachment(attachment.path, key);
+      return true;
+    }
     if (targetDraftKey === activeDraftKeyRef.current) {
       if (attachmentDedupRef.current.seen(key.hash, key.source)) return false;
       rememberAttachment(attachment.path, key);
       const next = [...attachmentsRef.current, attachment];
       attachmentsRef.current = next;
       setAttachments(next);
+      queueMicrotask(() => publishPersistentDraft(targetDraftKey));
       return true;
     }
     const draft = cloneComposerDraft(draftsBySessionRef.current[targetDraftKey] ?? emptyComposerDraft());
@@ -1899,12 +1966,19 @@ export function Composer({
     draft.attachmentDedupKeys[attachment.path] = key;
     draft.attachments = [...draft.attachments, attachment];
     draftsBySessionRef.current[targetDraftKey] = draft;
+    publishPersistentDraft(targetDraftKey);
     return true;
   };
 
-  const addWorkspaceReferenceToDraft = (targetDraftKey: string, ref: WorkspaceReference) => {
+  const addWorkspaceReferenceToDraft = (targetDraftKey: string, ref: WorkspaceReference, owner?: PersistentComposerTarget) => {
+    if (owner?.isCurrent && !owner.isCurrent(owner.draftId, owner.generation)) return;
+    if (owner?.onPatch) {
+      owner.onPatch(owner.draftId, owner.generation, content => ({ ...content, workspaceRefs: content.workspaceRefs.some(item => workspaceReferenceKey(item) === workspaceReferenceKey(ref)) ? content.workspaceRefs : [...content.workspaceRefs, ref] }));
+      return;
+    }
     if (targetDraftKey === activeDraftKeyRef.current) {
       addWorkspaceReference(ref);
+      queueMicrotask(() => publishPersistentDraft(targetDraftKey));
       return;
     }
     const draft = cloneComposerDraft(draftsBySessionRef.current[targetDraftKey] ?? emptyComposerDraft());
@@ -1912,6 +1986,7 @@ export function Composer({
     if (draft.workspaceRefs.some((item) => workspaceReferenceKey(item) === key)) return;
     draft.workspaceRefs = [...draft.workspaceRefs, ref];
     draftsBySessionRef.current[targetDraftKey] = draft;
+    publishPersistentDraft(targetDraftKey);
   };
 
   const clearSubmittedDraft = (targetDraftKey: string) => {
@@ -2082,8 +2157,15 @@ export function Composer({
     const submittedDraft = followupDraftFingerprint(submitDraftKey);
     const currentSessionRefs = sessionRefsRef.current;
     const currentSelectedTextRefs = selectedTextRefsRef.current;
-    const currentPastedBlocks = [...pastedBlocksRef.current];
+		const currentPastedBlocks = [...pastedBlocksRef.current];
+		let submissionCapture: unknown;
+		let submissionAttachmentTarget: string | undefined;
+		let attachmentSubmissionId: string | undefined;
+		let attachmentSubmit: Awaited<ReturnType<typeof loadAttachmentSubmit>> | undefined;
     try {
+      submissionCapture = onCaptureSubmit?.(persistentSnapshot(snapshotComposerDraft()));
+      if (onCaptureSubmit && !submissionCapture) return;
+      await onPrepareSubmit?.(submissionCapture);
       if (finishing && !submitPendingKey) throw new Error("reasonix_error:inbox_not_submitted");
       const target = finishing && app.CaptureInboxTarget
         ? await app.CaptureInboxTarget(submitTabId || "", inboxSessionPath || "") : undefined;
@@ -2109,11 +2191,19 @@ export function Composer({
       const submitBase = sessionContext ? `${sessionContext}${baseSubmitText}` : baseSubmitText;
       const submitText = [submitBase, selectedTextContext].filter(Boolean).join("\n\n");
       const structuredInput = [expandPastedBlocks(trimmedText, currentPastedBlocks), refs].filter(Boolean).join(" ");
-      const structured = trimmedDraft.invocations.length > 0 ? {
-        display: [invocationText, displayRefs].filter(Boolean).join(invocationText && displayRefs ? " " : ""),
-        input: [sessionContext ? `${sessionContext}${structuredInput}` : structuredInput, selectedTextContext].filter(Boolean).join("\n\n"),
-        invocations: invocationRequests(trimmedDraft.invocations),
-      } satisfies StructuredInvocationSubmit : undefined;
+				let structured: StructuredInvocationSubmit | undefined = trimmedDraft.invocations.length > 0 ? {
+				display: [invocationText, displayRefs].filter(Boolean).join(invocationText && displayRefs ? " " : ""),
+				input: [sessionContext ? `${sessionContext}${structuredInput}` : structuredInput, selectedTextContext].filter(Boolean).join("\n\n"),
+				invocations: invocationRequests(trimmedDraft.invocations),
+			} satisfies StructuredInvocationSubmit : undefined;
+			const stagedImages = orderedAttachments.filter((item) => item.draftId);
+			if (stagedImages.length > 0 && bridgeTarget.kind === "session") {
+				attachmentSubmit = await loadAttachmentSubmit();
+				const prepared = await attachmentSubmit.prepareImageSubmission(app, bridgeTarget, submitDraftKey, submittedDraft, stagedImages, structured, displayText, submitText);
+				submissionAttachmentTarget = prepared.token;
+				attachmentSubmissionId = prepared.submissionId;
+				structured = prepared.structured;
+			}
       if (running) {
         // An entity-only submit has an empty displayText (entities live
         // outside the text model); fall back to the serialized slash form so
@@ -2183,11 +2273,15 @@ export function Composer({
         }
         return;
       }
-      await onSend(displayText, submitText, submitTabId, structured);
-      clearSubmittedDraft(submitDraftKey);
+			await onSend(displayText, submitText, submitTabId, structured, submissionCapture);
+			attachmentSubmit?.settleImageSubmission(submitDraftKey, attachmentSubmissionId);
+			if (!persistentDraft) clearSubmittedDraft(submitDraftKey);
     } catch (error) {
-      showToast(formatInboxError(error, locale), "warn");
-    } finally {
+      if (persistentDraft?.onTaskError) persistentDraft.onTaskError(persistentDraft.draftId, persistentDraft.generation, formatInboxError(error, locale));
+      else showToast(formatInboxError(error, locale), "warn");
+		} finally {
+			if (submissionAttachmentTarget) await app.ReleaseAttachmentTarget?.(submissionAttachmentTarget);
+			onReleaseSubmit?.(submissionCapture);
       updateSubmittingForDraft(submitDraftKey, false);
     }
   };
@@ -2305,119 +2399,177 @@ export function Composer({
     }
   };
 
-  const readFileAsDataURL = (file: File) =>
-    new Promise<string>((resolve, reject) => {
-      const reader = new FileReader();
-      reader.onload = () => resolve(String(reader.result));
-      reader.onerror = () => reject(reader.error);
-      reader.readAsDataURL(file);
-    });
-
-  const attachImageFiles = async (files: File[], sourceDraftKey: string) => {
-    if (!attachmentInputEnabled) return;
-    const images = files.filter((f) => f.type.startsWith("image/"));
-    if (images.length === 0) return;
-    for (const file of images) {
+	const attachImageFiles = async (files: File[], sourceDraftKey: string) => {
+		const owner = persistentTargetsByDraftRef.current[sourceDraftKey];
+		if (!attachmentInputEnabled) return;
+		const sourceBridgeTarget = bridgeTargetsByDraftRef.current[sourceDraftKey] ?? bridgeTarget;
+		const images = files.filter((f) => f.type.startsWith("image/"));
+		if (images.length === 0) return;
+		// Capability validation happens synchronously inside captureImageTarget,
+		// before hashing or FileReader starts work for this owner.
+		const attachmentSubmit = await loadAttachmentSubmit();
+			const target = await attachmentSubmit.captureImageTarget(app, sourceBridgeTarget);
+		try {
+		for (const file of images) {
       updatePendingPasteForDraft(sourceDraftKey, 1);
       try {
         const key = await fileDedupKey(file);
         if (attachmentSeenInDraft(sourceDraftKey, key)) continue;
-        const dataUrl = await readFileAsDataURL(file);
-        const path = await app.SavePastedImage(dataUrl);
-        const previewUrl = await app.AttachmentDataURL(path);
-        addAttachmentToDraft(sourceDraftKey, { path, previewUrl, displayName: file.name }, key);
+				const staged = await attachmentSubmit.stageImageFile(app, target, `${sourceDraftKey}:${key.hash}:${key.source}`, file);
+				addAttachmentToDraft(sourceDraftKey, {
+					path: staged.path, previewUrl: staged.previewUrl, displayName: file.name,
+					draftId: staged.draftId, clientAttachmentId: crypto.randomUUID(),
+				}, key, owner);
       } catch (error) {
         console.warn("[composer] failed to attach pasted image", error);
-        showToast(t("composer.attachImageFailed"), "warn");
+        if (owner?.onTaskError) owner.onTaskError(owner.draftId, owner.generation, t("composer.attachImageFailed"));
+        else if (sourceDraftKey === activeDraftKeyRef.current) showToast(t("composer.attachImageFailed"), "warn");
         // non-fatal: a failed image attach must not block normal text input
       } finally {
         updatePendingPasteForDraft(sourceDraftKey, -1);
-      }
-    }
-  };
+			}
+		}
+		} finally {
+			await app.ReleaseAttachmentTarget?.(target);
+		}
+	};
 
   // Non-image pastes (PDFs, docs): the clipboard hands us bytes, not a path, so
   // the kernel stores them and we reference the saved path — attached, not ignored.
   const attachOtherFiles = async (files: File[], sourceDraftKey: string) => {
+    const owner = persistentTargetsByDraftRef.current[sourceDraftKey];
     if (!attachmentInputEnabled) return;
-    const others = files.filter((f) => !f.type.startsWith("image/"));
-    if (others.length === 0) return;
-    for (const file of others) {
+		const sourceBridgeTarget = bridgeTargetsByDraftRef.current[sourceDraftKey] ?? bridgeTarget;
+		const others = files.filter((f) => !f.type.startsWith("image/"));
+		if (others.length === 0) return;
+		const attachmentSubmit = await loadAttachmentSubmit();
+			const target = await attachmentSubmit.captureAttachmentTarget(app, sourceBridgeTarget, ["SavePastedFileForTarget"]);
+		try {
+		for (const file of others) {
       updatePendingPasteForDraft(sourceDraftKey, 1);
       try {
         const key = await fileDedupKey(file);
         if (attachmentSeenInDraft(sourceDraftKey, key)) continue;
-        const dataUrl = await readFileAsDataURL(file);
-        const path = await app.SavePastedFile(file.name, dataUrl);
-        addAttachmentToDraft(sourceDraftKey, { path, displayName: file.name }, key);
+        const dataUrl = await attachmentSubmit.readFileAsDataURL(file);
+				const path = await app.SavePastedFileForTarget!(target, file.name, dataUrl);
+        addAttachmentToDraft(sourceDraftKey, { path, displayName: file.name }, key, owner);
       } catch {
         console.warn("[composer] failed to attach pasted file");
-        showToast(t("composer.attachFileFailed"), "warn");
+        if (owner?.onTaskError) owner.onTaskError(owner.draftId, owner.generation, t("composer.attachFileFailed"));
+        else if (sourceDraftKey === activeDraftKeyRef.current) showToast(t("composer.attachFileFailed"), "warn");
         // non-fatal: a failed attach must not block normal text input
       } finally {
         updatePendingPasteForDraft(sourceDraftKey, -1);
-      }
-    }
-  };
+			}
+		}
+		} finally {
+			await app.ReleaseAttachmentTarget?.(target);
+		}
+	};
 
   const attachFiles = (files: File[]) => {
     if (!attachmentInputEnabled) return;
     const sourceDraftKey = activeDraftKeyRef.current;
-    void attachImageFiles(files, sourceDraftKey);
-    void attachOtherFiles(files, sourceDraftKey);
+		const target = persistentTargetsByDraftRef.current[sourceDraftKey];
+		if (target?.canEdit && !target.canEdit(target.draftId, target.generation)) return;
+		void trackPersistentTask(sourceDraftKey, attachImageFiles(files, sourceDraftKey)).catch((error) => {
+			console.warn("[composer] attachment image capability unavailable", error);
+			if (target?.onTaskError) target.onTaskError(target.draftId, target.generation, t("composer.attachImageFailed"));
+			else showToast(t("composer.attachImageFailed"), "warn");
+		});
+		void trackPersistentTask(sourceDraftKey, attachOtherFiles(files, sourceDraftKey)).catch((error) => {
+			console.warn("[composer] attachment file capability unavailable", error);
+			if (target?.onTaskError) target.onTaskError(target.draftId, target.generation, t("composer.attachFileFailed"));
+			else showToast(t("composer.attachFileFailed"), "warn");
+		});
   };
 
-  const attachNativeClipboardImage = async (notifyOnError: boolean, sourceDraftKey: string) => {
-    if (!attachmentInputEnabled) return;
-    updatePendingPasteForDraft(sourceDraftKey, 1);
-    try {
-      const path = await app.SaveClipboardImage();
-      const previewUrl = await app.AttachmentDataURL(path);
-      const key = { hash: await dataURLHash(previewUrl), source: `native-clipboard:${path}` };
-      if (attachmentSeenInDraft(sourceDraftKey, key)) return;
-      addAttachmentToDraft(sourceDraftKey, { path, previewUrl }, key);
-    } catch (error) {
-      console.warn("[composer] failed to read native clipboard image", error);
-      if (notifyOnError) showToast(t("composer.pasteImageFailed"), "warn");
-    } finally {
-      updatePendingPasteForDraft(sourceDraftKey, -1);
-    }
+  const attachNativeClipboardImage = (notifyOnError: boolean, sourceDraftKey: string, owner = persistentTargetsByDraftRef.current[sourceDraftKey]) => {
+		const sourceBridgeTarget = bridgeTargetsByDraftRef.current[sourceDraftKey] ?? bridgeTarget;
+		const task = (async () => {
+			if (!attachmentInputEnabled) return;
+			if (owner?.isCurrent && !owner.isCurrent(owner.draftId, owner.generation)) return;
+			const attachmentSubmit = await loadAttachmentSubmit();
+			const target = await attachmentSubmit.captureAttachmentTarget(app, sourceBridgeTarget, ["SaveClipboardImageForTarget", "AttachmentDataURLForTarget"]);
+			updatePendingPasteForDraft(sourceDraftKey, 1);
+			try {
+				const path = await app.SaveClipboardImageForTarget!(target);
+				const previewUrl = await app.AttachmentDataURLForTarget!(target, path);
+        const key = { hash: await dataURLHash(previewUrl), source: `native-clipboard:${path}` };
+        if (attachmentSeenInDraft(sourceDraftKey, key)) return;
+        addAttachmentToDraft(sourceDraftKey, { path, previewUrl }, key, owner);
+      } catch (error) {
+        console.warn("[composer] failed to read native clipboard image", error);
+        if (notifyOnError) {
+          if (owner?.onTaskError) owner.onTaskError(owner.draftId, owner.generation, t("composer.pasteImageFailed"));
+          else if (sourceDraftKey === activeDraftKeyRef.current) showToast(t("composer.pasteImageFailed"), "warn");
+        }
+			} finally {
+				await app.ReleaseAttachmentTarget?.(target);
+				updatePendingPasteForDraft(sourceDraftKey, -1);
+      }
+    })();
+		return trackPersistentTask(sourceDraftKey, task).catch((error) => {
+			console.warn("[composer] native clipboard attachment unavailable", error);
+			if (notifyOnError) {
+				if (owner?.onTaskError) owner.onTaskError(owner.draftId, owner.generation, t("composer.pasteImageFailed"));
+				else showToast(t("composer.pasteImageFailed"), "warn");
+			}
+		});
   };
 
   // OS file drops arrive as absolute paths through the native bridge (the webview
   // withholds them from the HTML drop event); the kernel resolves each into a
   // workspace @reference or a stored attachment.
-  const attachDroppedPaths = async (paths: string[], sourceDraftKey = activeDraftKeyRef.current) => {
-    setDragOver(false);
-    if (!attachmentInputEnabled) return;
-    for (const path of paths) {
-      updatePendingPasteForDraft(sourceDraftKey, 1);
-      try {
-        const key = { hash: "", source: `path:${path}` };
-        if (attachmentSeenInDraft(sourceDraftKey, key)) continue;
-        const item = await app.AttachDropped(path);
-        if (item.kind === "workspace") {
-          addWorkspaceReferenceToDraft(sourceDraftKey, { path: item.path, isDir: item.isDir, displayPath: item.displayPath });
-        } else {
-          addAttachmentToDraft(sourceDraftKey, { path: item.path, previewUrl: item.previewUrl, displayName: baseName(path) }, key);
-        }
-      } catch {
-        console.warn("[composer] failed to attach dropped file");
-        showToast(t("composer.attachDropFailed"), "warn");
-        // non-fatal: a failed drop attach must not block normal text input
-      } finally {
-        updatePendingPasteForDraft(sourceDraftKey, -1);
-      }
-    }
+  const attachDroppedPaths = (paths: string[], sourceDraftKey = activeDraftKeyRef.current) => {
+    const owner = persistentTargetsByDraftRef.current[sourceDraftKey];
+    if (owner?.canEdit && !owner.canEdit(owner.draftId, owner.generation)) return Promise.resolve();
+		const sourceBridgeTarget = bridgeTargetsByDraftRef.current[sourceDraftKey] ?? bridgeTarget;
+		const task = (async () => {
+			setDragOver(false);
+			if (!attachmentInputEnabled) return;
+			const attachmentSubmit = await loadAttachmentSubmit();
+			const target = await attachmentSubmit.captureAttachmentTarget(app, sourceBridgeTarget, ["AttachDroppedForTarget"]);
+			try {
+			for (const path of paths) {
+        updatePendingPasteForDraft(sourceDraftKey, 1);
+        try {
+          const key = { hash: "", source: `path:${path}` };
+          if (attachmentSeenInDraft(sourceDraftKey, key)) continue;
+					const item = await app.AttachDroppedForTarget!(target, path);
+          if (item.kind === "workspace") {
+            addWorkspaceReferenceToDraft(sourceDraftKey, { path: item.path, isDir: item.isDir, displayPath: item.displayPath }, owner);
+          } else {
+            addAttachmentToDraft(sourceDraftKey, { path: item.path, previewUrl: item.previewUrl, displayName: baseName(path) }, key, owner);
+          }
+        } catch {
+          console.warn("[composer] failed to attach dropped file");
+          if (owner?.onTaskError) owner.onTaskError(owner.draftId, owner.generation, t("composer.attachDropFailed"));
+          else if (sourceDraftKey === activeDraftKeyRef.current) showToast(t("composer.attachDropFailed"), "warn");
+        } finally {
+          updatePendingPasteForDraft(sourceDraftKey, -1);
+				}
+			}
+			} finally {
+				await app.ReleaseAttachmentTarget?.(target);
+			}
+		})();
+		return trackPersistentTask(sourceDraftKey, task).catch((error) => {
+			console.warn("[composer] dropped attachment capability unavailable", error);
+			if (owner?.onTaskError) owner.onTaskError(owner.draftId, owner.generation, t("composer.attachDropFailed"));
+			else showToast(t("composer.attachDropFailed"), "warn");
+		});
   };
 
   useEffect(() => {
     if (!attachmentInputEnabled) return;
     return onFilesDropped((paths) => void attachDroppedPaths(paths, activeDraftKeyRef.current));
-  }, [attachmentInputEnabled]);
+  }, [attachmentInputEnabled, bridgeTargetKey]);
 
   const onPaste = (e: ClipboardEvent<HTMLTextAreaElement | HTMLDivElement>) => {
     clearNativeClipboardPasteTimer();
+    const owner = persistentTargetsByDraftRef.current[activeDraftKeyRef.current];
+    if (owner?.canEdit && !owner.canEdit(owner.draftId, owner.generation)) { e.preventDefault(); return; }
     const files = clipboardFiles(e.clipboardData);
     if (files.length > 0) {
       e.preventDefault();
@@ -2561,8 +2713,32 @@ export function Composer({
     end: number,
     targetDraftKey = activeDraftKeyRef.current,
     afterInvocationId?: string,
+    owner?: PersistentComposerTarget,
   ) => {
+    if (owner?.isCurrent && !owner.isCurrent(owner.draftId, owner.generation)) return;
     const normalizedPasted = pasted.replace(/\r\n/g, "\n");
+    if (owner?.onPatch) {
+      let caret = start;
+      owner.onPatch(owner.draftId, owner.generation, (current) => {
+        // Clipboard reads may finish after further typing or navigation. Merge
+        // into the owner's latest fields; never restore a cached Composer copy.
+        const unchanged = current.text === owner.initial.text;
+        const from = unchanged ? Math.min(start, current.text.length) : current.text.length;
+        const to = unchanged ? Math.min(end, current.text.length) : from;
+        let inserted = normalizedPasted;
+        let blocks = current.pastedBlocks;
+        if (shouldFoldPaste(pasted)) {
+          do { inserted = t("composer.pastedLabel", { id: nextPasteId.current++, lines: lineCount(pasted) }); }
+          while (blocks.some((block) => block.label === inserted));
+          blocks = [...blocks, { label: inserted, text: pasted }];
+        }
+        const next = replaceInvocationTextRange(current.text, current.invocations, from, to, inserted, unchanged ? afterInvocationId : undefined);
+        caret = from + inserted.length;
+        return { ...current, text: next.text, invocations: next.invocations, pastedBlocks: blocks };
+      });
+      if (targetDraftKey === activeDraftKeyRef.current) focusInputRange(caret);
+      return;
+    }
     const beforeEdit = composerEditSnapshot(targetDraftKey, { start, end, afterInvocationId });
     let caret: number;
     if (targetDraftKey !== activeDraftKeyRef.current) {
@@ -2591,7 +2767,9 @@ export function Composer({
       draft.text = next.text;
       draft.invocations = next.invocations;
       draftsBySessionRef.current[targetDraftKey] = draft;
+      owner?.onPatch?.(owner.draftId, owner.generation, { text: draft.text, invocations: draft.invocations, pastedBlocks: draft.pastedBlocks });
       recordComposerEdit(targetDraftKey, beforeEdit, composerEditSnapshot(targetDraftKey, { start: caret, end: caret }));
+      publishPersistentDraft(targetDraftKey);
       return;
     }
 
@@ -2634,6 +2812,7 @@ export function Composer({
       focusInputRange(caret);
     }
     recordComposerEdit(targetDraftKey, beforeEdit, composerEditSnapshot(targetDraftKey, { start: caret, end: caret }));
+    queueMicrotask(() => publishPersistentDraft(targetDraftKey));
   };
 
   const copyComposerSelection = async (cut = false) => {
@@ -2680,14 +2859,18 @@ export function Composer({
     }
   };
 
-  const pasteIntoComposer = async () => {
+  const pasteIntoComposer = () => {
     const selection = getInputSelection();
     const sourceDraftKey = activeDraftKeyRef.current;
+    const owner = persistentTargetsByDraftRef.current[sourceDraftKey];
+    if (owner?.canEdit && !owner.canEdit(owner.draftId, owner.generation)) return Promise.resolve();
     setInputMenuPoint(null);
+    return trackPersistentTask(sourceDraftKey, (async () => {
 
     // Try reading clipboard items for image detection (no event in menu path)
     try {
       const items = await navigator.clipboard.read();
+      if (owner?.isCurrent && !owner.isCurrent(owner.draftId, owner.generation)) return;
       if (attachmentInputEnabled && items.some((item) => item.types.some((t) => t.startsWith("image/")))) {
         void attachNativeClipboardImage(true, sourceDraftKey);
         return;
@@ -2704,6 +2887,7 @@ export function Composer({
     }
     try {
       const pasted = await navigator.clipboard.readText();
+      if (owner?.isCurrent && !owner.isCurrent(owner.draftId, owner.generation)) return;
       if (pasted === "") {
         // Match the keyboard paste handler: an empty text read means "nothing
         // to insert" (empty clipboard, files, or unsupported types) — never
@@ -2721,12 +2905,14 @@ export function Composer({
         selection.to,
         sourceDraftKey,
         selection.afterInvocationId,
+        owner,
       );
     } catch {
       if (sourceDraftKey === activeDraftKeyRef.current) {
         focusInputRange(selection.from, selection.to, selection.afterInvocationId);
       }
     }
+    })());
   };
 
   const selectAllComposerText = () => {
@@ -3390,9 +3576,16 @@ export function Composer({
     if (attachmentInputEnabled && isPasteShortcut(e) && !composing) {
       clearNativeClipboardPasteTimer();
       const sourceDraftKey = activeDraftKeyRef.current;
+      const owner = persistentTargetsByDraftRef.current[sourceDraftKey];
+      if (owner?.canEdit && !owner.canEdit(owner.draftId, owner.generation)) { e.preventDefault(); return; }
+      let settle!: () => void;
+      const task = new Promise<void>(resolve => { settle = resolve; });
+      nativeClipboardPasteCompletionRef.current = settle;
+      void trackPersistentTask(sourceDraftKey, task);
       nativeClipboardPasteTimerRef.current = window.setTimeout(() => {
         nativeClipboardPasteTimerRef.current = null;
-        void attachNativeClipboardImage(false, sourceDraftKey);
+        nativeClipboardPasteCompletionRef.current = null;
+        void attachNativeClipboardImage(false, sourceDraftKey, owner).finally(settle);
       }, 160);
     }
 
@@ -4371,12 +4564,21 @@ export function Composer({
         <span className="composer-guidance-item__text" title={pendingFollowup.display}>{pendingFollowup.display}</span>
         <span>{t("runtime.unconfirmed")}</span>
       </div>}
+      <div className={`composer-workspace-frame${workspaceContext ? " composer-workspace-frame--context" : " composer-workspace-frame--plain"}`}>
+      {workspaceContext && running && !waitingPrompt && !retry?.recovery?.waiting && !finishing && !runtimeState.unknown ? (
+        <span className="composer-glowring" aria-hidden="true"><i /></span>
+      ) : null}
+      {workspaceContext ? (
+        <Suspense fallback={<div className="composer-workspace-bar-fallback" aria-hidden="true" />}>
+          <ComposerWorkspaceContextBar context={workspaceContext} />
+        </Suspense>
+      ) : null}
       <div
         className={`composer-card${composerHeight !== null || composerResizing ? " composer-card--resized" : ""}${composerAutoExpanded ? " composer-card--autosized" : ""}${composerAutoOverflow ? " composer-card--auto-overflow" : ""}${composerResizing ? " composer-card--resizing" : ""}${running && !finishing && !runtimeState.unknown ? (waitingPrompt ? " composer-card--waiting" : " composer-card--running") : ""}`}
         ref={composerCardRef}
         style={composerCardStyle}
       >
-        {running && !waitingPrompt && !retry?.recovery?.waiting && (
+        {!workspaceContext && running && !waitingPrompt && !retry?.recovery?.waiting && (
           <span className="composer-glowring" aria-hidden="true"><i /></span>
         )}
         <button
@@ -4607,7 +4809,7 @@ export function Composer({
                   balance={balance} dismissSignal={transientDismissSignal}
                 />
               )}
-              <Suspense fallback={<span className="modelsw__label">{modelLabel}</span>}><ModelSwitcher composerMenu label={modelLabel} tabId={tabId} ready={ready} sessionKey={sessionKey} disabled={suspendedByDecision} dismissSignal={transientDismissSignal} onPick={onSwitchModel} onManage={() => {
+              <Suspense fallback={<span className="modelsw__label">{modelLabel}</span>}><ModelSwitcher composerMenu label={modelLabel} tabId={tabId} draftId={persistentDraft?.draftId} ready={ready} sessionKey={sessionKey} disabled={disabled || suspendedByDecision} dismissSignal={transientDismissSignal} onPick={onSwitchModel} onManage={() => {
                 useAppNavigationStore.getState().setSettingsFocus({ target: "model-access" });
                 useAppNavigationStore.getState().setSettingsTarget("models");
               }} /></Suspense>
@@ -4645,9 +4847,16 @@ export function Composer({
                 </button>
               </Tooltip>
               {submitUnavailableHint && <span className="composer-toolbar-send__hint">{submitUnavailableHint}</span>}
+              {authentication && authentication.status !== "ready" && <Suspense fallback={null}>
+                <AuthenticationRecoveryActions
+                  authentication={authentication}
+                  tabId={tabId}
+                />
+              </Suspense>}
             </div>
           </div>
         </div>
+      </div>
       </div>
     </div>
   );

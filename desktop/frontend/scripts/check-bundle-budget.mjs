@@ -23,7 +23,7 @@ function formatKiB(bytes) {
 
 function assertBudget(label, actual, budget) {
   if (actual > budget) {
-    throw new Error(`${label} is ${formatKiB(actual)}; budget is ${formatKiB(budget)}`);
+    throw new Error(`${label} is ${formatKiB(actual)} (${actual} B); budget is ${formatKiB(budget)} (${Math.floor(budget)} B)`);
   }
   process.stdout.write(`  PASS  ${label}: ${formatKiB(actual)} / ${formatKiB(budget)}\n`);
 }
@@ -449,9 +449,43 @@ const rawInitialBytes = [...initialJS, ...initialCSS, ...appShellCSS]
 // startup bridge measures 2439.6 KiB; retain 0.3 KiB bounded toolchain headroom.
 // History preparation and cancellation across startup and paging add 884 B
 // (0.035%) to the 2498286 B base. Measured 2499170 B; retain 0.1 KiB headroom.
-// The progress-budget settings controls add their markup/state to the same
-// initial payload (~1.9 KiB raw measured on the settings baseline); retain
-// the same bounded headroom on the 2440.7 KiB upstream ceiling.
-const rawInitialBudgetKiB = 2_442.7;
+// Independent-session identity, organization CAS and unread/lifecycle guards
+// measure 2443.0 KiB against the same-toolchain main-v2 base of 2440.7 KiB
+// (+2.3 KiB, 0.095%). Retain one tenth; all other limits stay unchanged.
+// Complete export execution/rendering remains lazy; only bounded progress,
+// lifecycle observation, and cross-page tool-state hydration enter startup.
+// A full 40-character identity measures 2064513 B in the browser build and
+// 2064459 B in Electron, versus 2064077 B on current main-v2 (+436 B, 0.021%).
+// Retain the smallest one-decimal ceiling; all other limits stay unchanged.
+// Reasoning capability recovery copy moves the same-toolchain local build from
+// 2064327 B to 2064614 B (+287 B, 0.014%). The stable build with a full source
+// identity measures 2064746 B; retain the next one-decimal ceiling.
+// The React error-family field adds 177 B to the same production build. The
+// measured 2064923 B payload keeps the existing gzip, CSS, and chunk limits.
+// Approval outcome recovery measures 2065149 B on current main-v2, versus the
+// 2015.6 KiB base. Retain 0.15 KiB headroom; all other limits stay unchanged.
+// Live-default draft fencing and frozen-model recovery measure 2066040 B
+// (2017.617 KiB). Retain 0.183 KiB; gzip, chunk, CSS, and locale gates stay fixed.
+// Session-id migration and cross-client takeover measure 2073794 B merged onto
+// that main-v2 payload, 7754 B (0.375%) over it. The startup-path growth is
+// attributable to this branch's remote session identity work: the remote
+// telemetry and status modules become static imports of useRemoteSession (they
+// leave their lazily loaded surface chunk), plus the canonical session-id
+// plumbing, the spectator reconcile loop and its ownership classification, the
+// pre-activation history prime, the rebased optimistic-submission settlement,
+// and the project tree's canonical row identity. The CI Linux stable build
+// measures 2073980 B (2025.4 KiB), 186 B above the same-toolchain macOS build;
+// the ceiling follows the CI producer. Retain 0.13 KiB headroom at the next
+// one-decimal ceiling; gzip, CSS, and chunk limits are unchanged.
+// Combining that migration with restored historical-tab preparation measures
+// 2074127 B locally. Preserve the measured 186 B Linux producer difference
+// above (2074313 B combined), with 0.11 KiB headroom. Historical preparation
+// remains lazy; compressed, chunk, CSS, and locale limits stay unchanged.
+// The progress-budget settings controls (enabled/rounds) add their markup,
+// state and host bindings to the same startup payload and measure 2075453 B
+// on this toolchain (+1140 B, 0.055% over that combined base). Retain 0.10 KiB
+// headroom at the next one-decimal ceiling; gzip, CSS, and chunk limits are
+// unchanged.
+const rawInitialBudgetKiB = 2_026.9;
 assertBudget("initial raw JavaScript and CSS", rawInitialBytes, rawInitialBudgetKiB * 1024);
 assertBudget("largest initial JavaScript chunk raw", largestInitialJSRaw, 1_000 * 1024);

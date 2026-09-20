@@ -174,7 +174,11 @@ func TestCanonicalSessionHistoryHTTPUsesAuthorizedContentRanges(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	t.Cleanup(func() { _ = service.CloseAll(context.Background()) })
+	t.Cleanup(func() {
+		if err := service.Shutdown(context.Background()); err != nil {
+			t.Errorf("shutdown session service: %v", err)
+		}
+	})
 	runtime, err := service.Create(t.Context(), canonical.CreateOptions{SessionID: "canonical"})
 	if err != nil {
 		t.Fatal(err)
@@ -222,7 +226,7 @@ func TestCanonicalSessionHistoryHTTPUsesAuthorizedContentRanges(t *testing.T) {
 		t.Fatalf("close follow status=%d", closed.StatusCode)
 	}
 	var page canonical.MessageHistoryPage
-	for deadline := time.Now().Add(5 * time.Second); ; time.Sleep(time.Millisecond) {
+	for {
 		response, requestErr := http.Get(server.URL + "/session-history/page?sessionId=canonical&limit=10")
 		if requestErr != nil {
 			t.Fatal(requestErr)
@@ -235,9 +239,10 @@ func TestCanonicalSessionHistoryHTTPUsesAuthorizedContentRanges(t *testing.T) {
 		if page.Status == "ready" {
 			break
 		}
-		if page.Status != "preparing" || time.Now().After(deadline) {
+		if page.Status != "preparing" {
 			t.Fatalf("history preparation = %+v", page)
 		}
+		waitHistoryPreparation(t)
 	}
 	if len(page.Messages) != 1 || page.Messages[0].ContentRef == nil {
 		t.Fatalf("history page=%+v", page)
@@ -252,7 +257,7 @@ func TestCanonicalSessionHistoryHTTPUsesAuthorizedContentRanges(t *testing.T) {
 		t.Fatalf("location status=%d response=%+v err=%v", locationResponse.StatusCode, location, err)
 	}
 	var search canonical.SearchHistoryPage
-	for deadline := time.Now().Add(5 * time.Second); ; time.Sleep(time.Millisecond) {
+	for {
 		response, requestErr := http.Get(server.URL + "/session-history/search?sessionId=canonical&q=range&limit=10")
 		if requestErr != nil {
 			t.Fatal(requestErr)
@@ -265,9 +270,10 @@ func TestCanonicalSessionHistoryHTTPUsesAuthorizedContentRanges(t *testing.T) {
 		if search.Status == "ready" {
 			break
 		}
-		if search.Status != "preparing" || time.Now().After(deadline) {
+		if search.Status != "preparing" {
 			t.Fatalf("search preparation = %+v", search)
 		}
+		waitHistoryPreparation(t)
 	}
 	if len(search.Hits) != 1 || search.Hits[0].MessageID != "large" {
 		t.Fatalf("search page=%+v", search)
@@ -503,7 +509,11 @@ func newWindowTestServer(t *testing.T) (*httptest.Server, *control.Controller) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	t.Cleanup(func() { _ = service.CloseAll(context.Background()) })
+	t.Cleanup(func() {
+		if err := service.Shutdown(context.Background()); err != nil {
+			t.Errorf("shutdown session service: %v", err)
+		}
+	})
 	runtime, err := service.Create(t.Context(), canonical.CreateOptions{SessionID: "canonical"})
 	if err != nil {
 		t.Fatal(err)
@@ -543,7 +553,6 @@ func newWindowTestServer(t *testing.T) (*httptest.Server, *control.Controller) {
 // cold session kicks off the locator build in the background.
 func getWindow(t *testing.T, server *httptest.Server, query string, into *canonical.HistoryWindowPage) {
 	t.Helper()
-	deadline := time.Now().Add(10 * time.Second)
 	for {
 		response, err := http.Get(server.URL + "/session-history/window?sessionId=canonical&" + query)
 		if err != nil {
@@ -557,10 +566,18 @@ func getWindow(t *testing.T, server *httptest.Server, query string, into *canoni
 		if into.Status != "preparing" {
 			return
 		}
-		if time.Now().After(deadline) {
-			t.Fatalf("window stayed preparing for %q", query)
-		}
-		time.Sleep(time.Millisecond)
+		waitHistoryPreparation(t)
+	}
+}
+
+// Readiness is a lifecycle condition; the package alarm bounds a stuck build.
+// Pace HTTP polling so it does not compete with the index worker for the runner.
+func waitHistoryPreparation(t *testing.T) {
+	t.Helper()
+	select {
+	case <-t.Context().Done():
+		t.Fatal(t.Context().Err())
+	case <-time.After(25 * time.Millisecond):
 	}
 }
 
@@ -576,4 +593,99 @@ func windowIDs(page canonical.HistoryWindowPage) []string {
 func windowShape(page canonical.HistoryWindowPage) canonical.HistoryWindowPage {
 	page.Messages = nil
 	return page
+}
+
+// TestCanonicalSessionHistoryHTTPAnswersColdIdentity keeps history-first
+// hydration possible: a stored session that is not this serve's bound
+// foreground (never activated here, or rotated away) must answer the
+// identity-addressed history endpoints from persisted data alone, while an
+// identity the store does not know keeps refusing.
+func TestCanonicalSessionHistoryHTTPAnswersColdIdentity(t *testing.T) {
+	root := filepath.Join(t.TempDir(), "sessions-v4")
+	service, err := canonical.NewService("serve", canonical.NewFilesystemPersistence(root))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		if err := service.Shutdown(context.Background()); err != nil {
+			t.Errorf("shutdown session service: %v", err)
+		}
+	})
+	seed := func(id, text string) *canonical.Runtime {
+		runtime, createErr := service.Create(t.Context(), canonical.CreateOptions{SessionID: id})
+		if createErr != nil {
+			t.Fatal(createErr)
+		}
+		payload, _ := json.Marshal(map[string]any{"message": provider.Message{ID: "m-" + id, Role: provider.RoleUser, Content: text}})
+		if _, err := runtime.Session().AppendBatch(t.Context(), "message", []canonical.Event{{Kind: "message/complete", Payload: payload}}); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := runtime.Session().Flush(t.Context()); err != nil {
+			t.Fatal(err)
+		}
+		return runtime
+	}
+	foreground := seed("foreground", "bound to the controller")
+	seed("cold", "stored but never foreground")
+	// The cold identity keeps a persisted session on disk but no live runtime.
+	if err := service.Close(t.Context(), canonical.SessionRef{HostID: "serve", SessionID: "cold"}); err != nil {
+		t.Fatal(err)
+	}
+	bc := NewBroadcaster()
+	ctrl := control.New(control.Options{SessionService: service, SessionRuntime: foreground, ExclusiveSession: true, Sink: bc})
+	defer ctrl.Close()
+	server := httptest.NewServer(New(ctrl, bc, config.ServeConfig{}).Handler())
+	defer server.Close()
+
+	var page canonical.MessageHistoryPage
+	for attempt := 0; ; attempt++ {
+		response, requestErr := http.Get(server.URL + "/session-history/page?sessionId=cold&limit=10")
+		if requestErr != nil {
+			t.Fatal(requestErr)
+		}
+		decodeErr := json.NewDecoder(response.Body).Decode(&page)
+		_ = response.Body.Close()
+		if decodeErr != nil || response.StatusCode != http.StatusOK {
+			t.Fatalf("cold history status=%d page=%+v err=%v", response.StatusCode, page, decodeErr)
+		}
+		if page.Status == "ready" {
+			break
+		}
+		if page.Status != "preparing" || attempt > 100 {
+			t.Fatalf("cold history preparation = %+v", page)
+		}
+		waitHistoryPreparation(t)
+	}
+	if len(page.Messages) != 1 || page.Messages[0].MessageID != "m-cold" {
+		t.Fatalf("cold page=%+v", page)
+	}
+	openResponse, err := http.Get(server.URL + "/session/open?sessionId=cold")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var openView canonical.SessionOpenView
+	decodeErr := json.NewDecoder(openResponse.Body).Decode(&openView)
+	_ = openResponse.Body.Close()
+	if decodeErr != nil || openResponse.StatusCode != http.StatusOK {
+		t.Fatalf("cold open status=%d view=%+v err=%v", openResponse.StatusCode, openView, decodeErr)
+	}
+	// The explicit foreground identity stays answerable through the same form.
+	foregroundResponse, err := http.Get(server.URL + "/session-history/page?sessionId=foreground&limit=10")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if foregroundResponse.StatusCode != http.StatusOK {
+		_ = foregroundResponse.Body.Close()
+		t.Fatalf("foreground history status=%d", foregroundResponse.StatusCode)
+	}
+	_ = foregroundResponse.Body.Close()
+	// An identity the store does not know keeps the conflict answer.
+	unknown, err := http.Get(server.URL + "/session-history/page?sessionId=missing")
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = unknown.Body.Close()
+	if unknown.StatusCode != http.StatusConflict {
+		t.Fatalf("unknown session status=%d", unknown.StatusCode)
+	}
 }

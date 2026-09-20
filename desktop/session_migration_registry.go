@@ -3,11 +3,13 @@ package main
 import (
 	"context"
 	"errors"
+	"log/slog"
 	"os"
 	"path/filepath"
 
+	"reasonix/desktop/internal/legacycleanup"
 	"reasonix/desktop/internal/workspacestate"
-	"reasonix/internal/filelock"
+	filelock "reasonix/internal/identitylock"
 	"reasonix/internal/session"
 )
 
@@ -62,6 +64,12 @@ func (a *App) completeRegisteredMigration(ctx context.Context, source desktopMig
 	if err := a.commitDesktopImport(ctx, source, path, format, fingerprint, id, workspace); err != nil {
 		return err
 	}
+	if format == "legacy" {
+		if err := a.bindLegacyCleanupMigration(ctx, path, source.headID, id, workspace); err != nil &&
+			!errors.Is(err, legacycleanup.ErrNotInitialized) && !errors.Is(err, errLegacyCleanupStateChanged) {
+			slog.Warn("desktop: legacy cleanup migration binding unavailable")
+		}
+	}
 	return cp.complete(id, digest)
 }
 
@@ -115,7 +123,7 @@ func lockDesktopMigrationLedger() (func(), error) {
 	if err := os.MkdirAll(filepath.Dir(path), 0700); err != nil {
 		return nil, err
 	}
-	return filelock.Acquire(context.Background(), path+".lock")
+	return filelock.TryAcquire(path + ".lock")
 }
 
 // Registry fingerprints distinguish a metadata-only stat change from a new

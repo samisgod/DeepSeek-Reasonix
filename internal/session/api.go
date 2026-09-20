@@ -68,12 +68,14 @@ type SessionInfo struct {
 	Ref             SessionRef
 	Codec           string
 	Title           string
+	TitleSequence   uint64
 	ModelRef        string
 	ModelIdentity   string
 	Turns           int
 	CreatedAt       time.Time
 	UpdatedAt       time.Time
 	EventSequence   uint64
+	ResultSequence  uint64
 	Preview         string
 	MetadataStatus  string
 	CWD             string
@@ -241,9 +243,10 @@ func (p *FilesystemPersistence) Stat(ctx context.Context, sessionID string) (Ses
 	}
 	cacheDir := filepath.Join(p.Root, ".query-cache", filepath.Base(id))
 	if metadata, metadataErr := readCatalogMetadata(cacheDir, manifest, revision); metadataErr == nil {
-		info.Title, info.ModelRef, info.ModelIdentity = metadata.Title, metadata.ModelRef, metadata.ModelIdentity
+		info.Title, info.TitleSequence = metadata.Title, metadata.TitleSequence
+		info.ModelRef, info.ModelIdentity = metadata.ModelRef, metadata.ModelIdentity
 		info.Turns, info.Preview, info.MetadataStatus = metadata.Turns, metadata.Preview, MetadataReady
-		info.EventSequence = metadata.Sequence
+		info.EventSequence, info.ResultSequence = metadata.Sequence, metadata.ResultSequence
 	}
 	return info, nil
 }
@@ -368,6 +371,13 @@ func validateSessionID(id string) error {
 		return fmt.Errorf("session: reserved session id %q", id)
 	}
 	return nil
+}
+
+// ValidateSessionID applies the canonical session storage identity rules.
+// Callers that accept compatibility routes must validate the extracted ID
+// before deciding whether the input names a SessionRef or a legacy path.
+func ValidateSessionID(id string) error {
+	return validateSessionID(id)
 }
 
 type readHandle struct {
