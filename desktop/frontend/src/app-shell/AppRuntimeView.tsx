@@ -17,7 +17,7 @@ import type { useAppShellStores } from "../app-runtime/useAppShellStores";
 import type { useAppSessionComposition } from "../app-runtime/useAppSessionComposition";
 import type { useAppNavigationComposition } from "../app-runtime/useAppNavigationComposition";
 import type { useSessionDraftSurface } from "../app-runtime/useSessionDraftSurface";
-import { creationHeroVisible } from "./draftPresentation";
+import { creationHeroVisible, draftStatusBase } from "./draftPresentation";
 import type { HistoryViewState } from "../app-runtime/historyViewProjection";
 import { ShellHotkeys, TextSizeHotkeys } from "./HotkeyRegistrations";
 import { WindowChromeLifecycle } from "../app-runtime/WindowChromeLifecycle";
@@ -516,10 +516,14 @@ export function AppRuntimeView(props: AppRuntimeViewProps) {
             onAddOutput: (sessionId) => void session.insertCommands.addTerminalOutputToComposer(sessionId),
             onAddToChat: session.insertCommands.addTerminalSelectionToComposer,
           },
-          status: draftActive || !session.statusBarVisible ? undefined : {
-            base: conversationView.status,
+          // The shell bar survives a draft: a portable install lands on that
+          // surface, and hiding the bar there loses the workspace identity and
+          // the background-job affordances entirely. Draft-scoped data keeps the
+          // replaced formal session out of it.
+          status: !session.statusBarVisible ? undefined : {
+            base: draft.surface ? draftStatusBase(conversationView.status, draft.surface) : conversationView.status,
             rewindCommitting: session.sessionUndo.rewindCommitting,
-            sessionTurns: session.sessionTurns,
+            sessionTurns: draft.surface ? 0 : session.sessionTurns,
             labelStyle: shell.preferences.statusBarStyle,
             items: shell.preferences.statusBarItems,
             extensionStatuses: session.extensionStatusList,

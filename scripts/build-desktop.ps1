@@ -228,9 +228,12 @@ if (-not $NoPackage) {
     Write-Section "Package Electron app"
     # package.mjs rebuilds the frontend and shell itself and then runs
     # @electron/packager, which downloads the Electron distribution through
-    # ELECTRON_MIRROR on first use.
+    # ELECTRON_MIRROR on first use. The entry point is anchored to $desktopDir:
+    # a relative "desktop/packaging/package.mjs" would resolve against the
+    # caller's working directory and break whenever the script is not started
+    # from the repository root.
     Invoke-External -Label "package.mjs $Platform $Version $Channel" -Command "node" `
-        -Arguments @("desktop/packaging/package.mjs", $Platform, $Version, $Channel)
+        -Arguments @((Join-Path $desktopDir "packaging/package.mjs"), $Platform, $Version, $Channel)
     Write-Host "    $appDir"
 
     # desktop-build.sh performs this lookup step for the release bundles; the

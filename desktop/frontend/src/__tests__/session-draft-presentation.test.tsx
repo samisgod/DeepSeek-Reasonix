@@ -7,7 +7,7 @@ import { JSDOM } from "jsdom";
 import type { SessionDraftSurface } from "../app-runtime/useSessionDraftSurface";
 import { initialState } from "../lib/useController";
 import { LocaleProvider, type Translator } from "../lib/i18n";
-import { creationHeroVisible } from "../app-shell/draftPresentation";
+import { creationHeroVisible, draftStatusBase } from "../app-shell/draftPresentation";
 
 register(new URL("../../scripts/svg-loader.mjs", import.meta.url));
 const { ChatPaneRegion } = await import("../app-shell/ChatPaneRegion");
@@ -46,6 +46,52 @@ const surface: SessionDraftSurface = {
 };
 
 const noop = () => {};
+
+// The shell's bottom status bar stays mounted on a draft surface (a portable
+// install lands there before its first turn), but its identity and telemetry
+// must come from the draft instead of the formal session it replaced.
+const formalStatus = {
+  context: { used: 4_200, window: 100_000, sessionTokens: 9_000 },
+  usage: undefined,
+  balance: undefined,
+  running: true,
+  jobs: [],
+  backgroundRuntimes: [],
+  sessionTokens: 9_000,
+  turnTokens: 321,
+  lastTurnOutputTokens: 42,
+  lastTurnModelMs: 1_000,
+  lastTurnOutputEstimated: true,
+  lastRequestTps: 12,
+  turnCost: 0.5,
+  turnRateBand: "peak",
+  cost: 1.25,
+  currency: "CNY",
+  modelLabel: "fixture/model",
+  workspacePath: "/workspace/formal",
+  workspaceName: "formal",
+  gitBranch: "feature/formal",
+} satisfies Parameters<typeof draftStatusBase>[0];
+
+{
+  const draftBase = draftStatusBase(formalStatus, surface);
+  assert.equal(draftBase.workspacePath, "/workspace/project", "a draft status bar shows the workspace it will open");
+  assert.equal(draftBase.workspaceName, "project", "draft workspace labels belong to the draft");
+  assert.equal(draftBase.gitBranch, undefined, "a draft status bar never shows the replaced session's branch");
+  assert.deepEqual(draftBase.context, { used: 0, window: 0, sessionTokens: 0 }, "a draft has no context telemetry yet");
+  assert.equal(draftBase.usage, undefined, "a draft has no wire usage yet");
+  assert.equal(draftBase.sessionTokens, 0, "a draft has no session tokens yet");
+  assert.equal(draftBase.turnTokens, 0, "a draft has no turn tokens yet");
+  assert.equal(draftBase.turnCost, 0, "a draft has no turn cost yet");
+  assert.equal(draftBase.cost, 0, "a draft has no session cost yet");
+  assert.equal(draftBase.lastRequestTps, undefined, "a draft has no throughput yet");
+  assert.equal(draftBase.running, true, "unrelated shell state survives the draft projection");
+
+  const globalBase = draftStatusBase(formalStatus, { ...surface, draft: { ...surface.draft, scope: "global", workspaceRoot: "" } });
+  assert.equal(globalBase.workspacePath, "", "a global draft keeps no workspace path");
+  assert.equal(globalBase.workspaceName, undefined, "a global draft keeps no workspace label");
+}
+
 for (const emptyHero of [true, false]) {
   assert.equal(creationHeroVisible(null, emptyHero), emptyHero, "formal sessions keep their own layout");
   assert.equal(creationHeroVisible(surface, emptyHero), true, "healthy drafts own the welcome layout");

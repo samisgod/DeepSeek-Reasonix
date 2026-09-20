@@ -365,6 +365,14 @@ ok(
   "a draft surface clears the previous formal-session highlight in the project tree",
 );
 
+// A portable install has no formal tab at all, so the draft landing surface is
+// the only place its shell bar can appear before the first turn.
+ok(
+  /status: !session\.statusBarVisible \? undefined : \{[\s\S]*?base: draft\.surface \? draftStatusBase\(conversationView\.status, draft\.surface\)/.test(appViewSource) &&
+    !/status:\s*draftActive \|\|/.test(appViewSource),
+  "the status bar stays mounted on a draft surface with draft-scoped data",
+);
+
 
 // The owner resumes history through topic activation alone; a second
 // resumeSession call would re-pin a session the activation already pinned.
